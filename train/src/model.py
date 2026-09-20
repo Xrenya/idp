@@ -1,5 +1,3 @@
-"""Two-stage LayoutLMv3 classifier for short and chunked documents."""
-
 from __future__ import annotations
 
 import warnings
@@ -10,8 +8,6 @@ from transformers import LayoutLMv3Model
 
 
 class AttentionAggregator(nn.Module):
-    """Pool chunk CLS embeddings with learned attention weights."""
-
     def __init__(self, hidden: int, dropout: float = 0.1) -> None:
         super().__init__()
         self.proj = nn.Linear(hidden, hidden)
@@ -42,8 +38,6 @@ def sliding_windows(seq_len: int, chunk_size: int, stride: int) -> list[tuple[in
 
 
 class LayoutLMv3MultiLabel(nn.Module):
-    """Run flat classification in stage 1 and chunk aggregation in stage 2."""
-
     def __init__(
         self,
         model_name: str = "microsoft/layoutlmv3-base",
@@ -69,7 +63,9 @@ class LayoutLMv3MultiLabel(nn.Module):
         self.max_chunks = int(max_chunks)
         self.stage = int(stage)
         self.aggregator = (
-            AttentionAggregator(hidden, dropout=dropout) if self.stage == 2 else None
+            AttentionAggregator(hidden, dropout=dropout)
+            if self.stage == 2
+            else None
         )
 
         if freeze_encoder is None:
@@ -90,7 +86,6 @@ class LayoutLMv3MultiLabel(nn.Module):
         self._encoder_frozen = False
 
     def agg_parameters(self):
-        """Yield the parameters trained in stage 2."""
         if self.aggregator is None:
             raise RuntimeError("No aggregator: build model with stage=2")
         yield from self.aggregator.parameters()
@@ -98,7 +93,6 @@ class LayoutLMv3MultiLabel(nn.Module):
         yield from self.dropout.parameters()
 
     def load_stage1_checkpoint(self, path: str, strict: bool = False) -> None:
-        """Load stage-1 weights; aggregator weights may be absent."""
         state = torch.load(path, map_location="cuda", weights_only=False)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]

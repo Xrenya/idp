@@ -1,5 +1,3 @@
-"""Post-training quantization for LayoutLMv3MultiLabel."""
-
 from __future__ import annotations
 
 import copy
@@ -28,7 +26,6 @@ def _tensor_nbytes(t: torch.Tensor) -> int:
 
 
 def model_size_mb(model: nn.Module) -> float:
-    """Approximate resident weight size in MB."""
     seen: set[int] = set()
     total = 0
 
@@ -56,7 +53,6 @@ def model_size_mb(model: nn.Module) -> float:
 
 
 def state_dict_size_mb(model: nn.Module) -> float:
-    """Serialized state_dict footprint (closer to on-disk checkpoint size)."""
     buf = io.BytesIO()
     torch.save(model.state_dict(), buf)
     return buf.tell() / (1024.0 * 1024.0)
@@ -77,7 +73,6 @@ def _replace_linear_bnb(
     threshold: float = 6.0,
     prefix: str = "",
 ) -> nn.Module:
-    """Replace eligible Linear layers with bitsandbytes Linear8bitLt modules."""
     for name, child in list(module.named_children()):
         full = f"{prefix}.{name}" if prefix else name
         if isinstance(child, nn.Linear) and not isinstance(
@@ -113,7 +108,6 @@ def quantize_hf_split(
     *,
     threshold: float = 6.0,
 ) -> nn.Module:
-    """Quantize the LayoutLMv3 encoder and keep the stage-2 head in FP32."""
     if device.type != "cuda":
         raise RuntimeError("hf_split quantization requires CUDA")
     if not hasattr(model, "encoder"):
@@ -134,10 +128,6 @@ def quantize_bitsandbytes(
     *,
     threshold: float = 6.0,
 ) -> nn.Module:
-    """Quantize every eligible Linear layer with bitsandbytes."""
-    if device.type != "cuda":
-        raise RuntimeError("bitsandbytes quantization requires CUDA")
-
     model = copy.deepcopy(model)
     model.eval()
     model.cpu()
@@ -154,7 +144,6 @@ def quantize_model(
     device: torch.device | None = None,
     threshold: float = 6.0,
 ) -> tuple[nn.Module, str]:
-    """Return the quantized model and selected backend name."""
     device = device or torch.device("cuda")
     if backend == "hf_split":
         return quantize_hf_split(model, device, threshold=threshold), "hf_split"
@@ -172,7 +161,6 @@ def benchmark_latency_ms(
     warmup: int = 5,
     runs: int = 20,
 ) -> dict[str, Any]:
-    """Average inference latency (ms) for one forward on a fixed batch."""
     model.eval()
     model.to(device)
     moved = {

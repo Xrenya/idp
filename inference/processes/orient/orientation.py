@@ -1,5 +1,3 @@
-"""Page orientation detection and correction."""
-
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -15,7 +13,7 @@ OrientationBackend = Literal["osd", "ocr_score", "auto", "none"]
 @dataclass
 class OrientationResult:
     rotate_degrees: int  # clockwise rotation applied to correct the page
-    detected_orientation: in
+    detected_orientation: int
     confidence: float
     backend: str
     script: str = ""
@@ -112,7 +110,6 @@ def correct_orientation(
                 result.raw = {"osd": osd.to_dict(), "ocr_score": result.raw}
                 result.backend = "auto:ocr_score"
             else:
-                # In OSD-only mode, low-confidence rotations are ignored.
                 result = OrientationResult(
                     rotate_degrees=0,
                     detected_orientation=osd.detected_orientation,

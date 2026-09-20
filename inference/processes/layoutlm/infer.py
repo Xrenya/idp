@@ -1,5 +1,3 @@
-"""Load LayoutLMv3 and run inference for one document."""
-
 from __future__ import annotations
 
 from pathlib import Path

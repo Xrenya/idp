@@ -1,5 +1,3 @@
-"""AlbumentationsX transforms for document images and OCR boxes."""
-
 from __future__ import annotations
 
 from typing import Any

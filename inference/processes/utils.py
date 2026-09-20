@@ -1,5 +1,3 @@
-"""Shared payload helpers for Podder processes."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +7,7 @@ from podder_task_foundation import Payload
 from podder_task_foundation.objects import Object
 
 
-def get_pil_image(payload: Payload, name: str = "image") -> Image.Image | None:
+def get_pil_image(payload: Payload, name: str = "image") -> Image.Image:
     obj = payload.get(name=name)
     p = Path(obj.data)
     return Image.open(p).convert("RGB")

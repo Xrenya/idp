@@ -1,5 +1,3 @@
-"""OCR and bounding-box helpers for LayoutLMv3."""
-
 from __future__ import annotations
 
 import hashlib

@@ -1,5 +1,3 @@
-"""Multi-label losses (focal) for document classification."""
-
 from __future__ import annotations
 
 import torch
@@ -8,8 +6,6 @@ import torch.nn.functional as F
 
 
 class MultiLabelFocalLoss(nn.Module):
-    """Sigmoid focal loss for multi-label classification."""
-
     def __init__(
         self,
         gamma: float = 2.0,

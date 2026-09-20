@@ -1,5 +1,3 @@
-"""Multi-label validation metrics (sklearn)."""
-
 from __future__ import annotations
 
 from typing import Sequence
@@ -25,7 +23,6 @@ def multilabel_metrics(
     threshold: float = 0.5,
     class_names: Sequence[str] | None = None,
 ) -> dict:
-    """Compute micro/macro/per-class F1 and Hamming loss."""
     yt = to_numpy(y_true).astype(np.int32)
     yp = (to_numpy(y_prob) >= threshold).astype(np.int32)
     if yt.ndim == 1:

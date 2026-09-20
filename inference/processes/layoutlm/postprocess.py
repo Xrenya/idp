@@ -1,5 +1,3 @@
-"""Format predictions and enforce long-document token limits."""
-
 from __future__ import annotations
 
 from typing import Any, Sequence
@@ -34,14 +32,12 @@ def stage2_token_budget(
     max_chunks: int,
     num_special_tokens: int = 2,
 ) -> int:
-    """Return the subword capacity of the configured sliding windows."""
     chunk_size = int(chunk_size)
     chunk_stride = int(chunk_stride)
     max_chunks = max(1, int(max_chunks))
     if max_chunks == 1:
         cover = chunk_size
     else:
-        # Each additional window contributes chunk_stride new tokens.
         cover = chunk_size + (max_chunks - 1) * chunk_stride
     return max(1, cover - int(num_special_tokens))
 
@@ -56,7 +52,6 @@ def truncate_words_for_stage2(
     max_chunks: int,
     num_special_tokens: int = 2,
 ) -> tuple[list[str], list[list[float]]]:
-    """Trim words and boxes to the capacity of the stage-2 windows."""
     n = len(words)
     if n == 0:
         return words, boxes

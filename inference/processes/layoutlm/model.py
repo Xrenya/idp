@@ -1,21 +1,13 @@
-"""Two-stage LayoutLMv3 classifier for short and chunked documents."""
-
 from __future__ import annotations
 
 import warnings
-from typing import Literal
 
 import torch
 import torch.nn as nn
 from transformers import LayoutLMv3Model
 
 
-AggregatorKind = Literal["attention", "transformer", "bilstm"]
-
-
 class AttentionAggregator(nn.Module):
-    """Pool chunk CLS embeddings with learned attention weights."""
-
     def __init__(self, hidden: int, dropout: float = 0.1) -> None:
         super().__init__()
         self.proj = nn.Linear(hidden, hidden)
@@ -29,60 +21,6 @@ class AttentionAggregator(nn.Module):
         weights = torch.softmax(scores, dim=-1)
         weights = self.dropout(weights)
         return torch.sum(chunk_embs * weights.unsqueeze(-1), dim=1)
-
-
-class TransformerAggregator(nn.Module):
-    def __init__(self, hidden: int, n_heads: int = 4, n_layers: int = 2, dropout: float = 0.1) -> None:
-        super().__init__()
-        layer = nn.TransformerEncoderLayer(
-            d_model=hidden,
-            nhead=n_heads,
-            dim_feedforward=hidden * 2,
-            dropout=dropout,
-            batch_first=True,
-            activation="gelu",
-        )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
-        self.cls = nn.Parameter(torch.randn(1, 1, hidden) * 0.02)
-
-    def forward(self, chunk_embs: torch.Tensor, chunk_mask: torch.Tensor) -> torch.Tensor:
-        b = chunk_embs.size(0)
-        cls = self.cls.expand(b, -1, -1)
-        x = torch.cat([cls, chunk_embs], dim=1)
-        pad = torch.cat(
-            [torch.zeros(b, 1, device=chunk_mask.device, dtype=chunk_mask.dtype), chunk_mask == 0],
-            dim=1,
-        ).bool()
-        y = self.encoder(x, src_key_padding_mask=pad)
-        return y[:, 0]
-
-
-class BiLSTMAggregator(nn.Module):
-    def __init__(self, hidden: int, dropout: float = 0.1) -> None:
-        super().__init__()
-        self.lstm = nn.LSTM(
-            hidden, hidden // 2, num_layers=1, batch_first=True, bidirectional=True
-        )
-        self.attn = AttentionAggregator(hidden, dropout=dropout)
-
-    def forward(self, chunk_embs: torch.Tensor, chunk_mask: torch.Tensor) -> torch.Tensor:
-        lengths = chunk_mask.sum(dim=1).clamp(min=1).cpu()
-        packed = nn.utils.rnn.pack_padded_sequence(
-            chunk_embs, lengths, batch_first=True, enforce_sorted=False
-        )
-        out, _ = self.lstm(packed)
-        out, _ = nn.utils.rnn.pad_packed_sequence(
-            out, batch_first=True, total_length=chunk_embs.size(1)
-        )
-        return self.attn(out, chunk_mask)
-
-
-def build_aggregator(kind: AggregatorKind, hidden: int, dropout: float = 0.1) -> nn.Module:
-    if kind == "transformer":
-        return TransformerAggregator(hidden, dropout=dropout)
-    if kind == "bilstm":
-        return BiLSTMAggregator(hidden, dropout=dropout)
-    return AttentionAggregator(hidden, dropout=dropout)
 
 
 def sliding_windows(seq_len: int, chunk_size: int, stride: int) -> list[tuple[int, int]]:
@@ -100,8 +38,6 @@ def sliding_windows(seq_len: int, chunk_size: int, stride: int) -> list[tuple[in
 
 
 class LayoutLMv3MultiLabel(nn.Module):
-    """Run flat classification in stage 1 and chunk aggregation in stage 2."""
-
     def __init__(
         self,
         model_name: str = "microsoft/layoutlmv3-base",
@@ -111,7 +47,6 @@ class LayoutLMv3MultiLabel(nn.Module):
         chunk_size: int = 400,
         chunk_stride: int = 100,
         max_chunks: int = 16,
-        aggregator: AggregatorKind = "attention",
         stage: int = 1,
         freeze_encoder: bool | None = None,
     ) -> None:
@@ -128,7 +63,7 @@ class LayoutLMv3MultiLabel(nn.Module):
         self.max_chunks = int(max_chunks)
         self.stage = int(stage)
         self.aggregator = (
-            build_aggregator(aggregator, hidden, dropout=dropout)
+            AttentionAggregator(hidden, dropout=dropout)
             if self.stage == 2
             else None
         )
@@ -150,8 +85,7 @@ class LayoutLMv3MultiLabel(nn.Module):
             p.requires_grad = True
         self._encoder_frozen = False
 
-    def overhead_parameters(self):
-        """Yield the parameters trained in stage 2."""
+    def agg_parameters(self):
         if self.aggregator is None:
             raise RuntimeError("No aggregator: build model with stage=2")
         yield from self.aggregator.parameters()
@@ -159,11 +93,9 @@ class LayoutLMv3MultiLabel(nn.Module):
         yield from self.dropout.parameters()
 
     def load_stage1_checkpoint(self, path: str, strict: bool = False) -> None:
-        """Load stage-1 weights; aggregator weights may be absent."""
-        state = torch.load(path, map_location="cpu")
+        state = torch.load(path, map_location="cuda", weights_only=False)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
-        # Strip DDP prefix if present.
         state = {k.replace("module.", "", 1): v for k, v in state.items()}
         missing, unexpected = self.load_state_dict(state, strict=strict)
         missing = [key for key in missing if not key.startswith("aggregator.")]
@@ -172,7 +104,7 @@ class LayoutLMv3MultiLabel(nn.Module):
         if unexpected:
             warnings.warn(f"Unused checkpoint keys: {unexpected[:8]}", stacklevel=2)
 
-    def encode_cls(
+    def encode(
         self,
         input_ids,
         attention_mask,
@@ -180,7 +112,6 @@ class LayoutLMv3MultiLabel(nn.Module):
         pixel_values,
         **kwargs,
     ) -> torch.Tensor:
-        """Return CLS features without gradients when the encoder is frozen."""
         if self._encoder_frozen:
             self.encoder.eval()
             with torch.no_grad():
@@ -203,14 +134,13 @@ class LayoutLMv3MultiLabel(nn.Module):
 
     def extract_chunk_features(
         self,
-        input_ids: torch.Tensor,  # [B, C, L] or will auto-chunk from [B, L]
+        input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         bbox: torch.Tensor,
         pixel_values: torch.Tensor,
         chunk_mask: torch.Tensor | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return chunk CLS features and their validity mask."""
         if input_ids.dim() == 2:
             input_ids, attention_mask, bbox, chunk_mask = self._make_chunks(
                 input_ids, attention_mask, bbox
@@ -227,7 +157,7 @@ class LayoutLMv3MultiLabel(nn.Module):
             .expand(-1, c, -1, -1, -1)
             .reshape(b * c, *pixel_values.shape[1:])
         )
-        cls = self.encode_cls(flat_ids, flat_mask, flat_bbox, flat_pixels, **kwargs)
+        cls = self.encode(flat_ids, flat_mask, flat_bbox, flat_pixels, **kwargs)
         return cls.view(b, c, -1), chunk_mask
 
     def forward_overhead(
@@ -235,9 +165,6 @@ class LayoutLMv3MultiLabel(nn.Module):
         chunk_embs: torch.Tensor,
         chunk_mask: torch.Tensor,
     ) -> dict:
-        """Aggregate chunk features and return classification logits."""
-        if self.aggregator is None:
-            raise RuntimeError("forward_overhead requires stage=2 (aggregator)")
         pooled = self.aggregator(chunk_embs, chunk_mask)
         logits = self.classifier(self.dropout(pooled))
         return {"logits": logits, "pooled": pooled}
@@ -312,12 +239,10 @@ class LayoutLMv3MultiLabel(nn.Module):
             raise ValueError("Need input_ids or chunk_embs")
 
         if chunk_embs is not None:
-            if chunk_mask is None:
-                raise ValueError("chunk_mask required with chunk_embs")
             return self.forward_overhead(chunk_embs, chunk_mask)
 
         if self.stage == 1:
-            pooled = self.encode_cls(
+            pooled = self.encode(
                 input_ids, attention_mask, bbox, pixel_values, **kwargs
             )
             logits = self.classifier(self.dropout(pooled))
@@ -345,7 +270,6 @@ def build_model_from_config(config: dict, num_labels: int = 4) -> LayoutLMv3Mult
         chunk_size=int(long_cfg.get("chunk_size", 400)),
         chunk_stride=int(long_cfg.get("chunk_stride", 100)),
         max_chunks=int(long_cfg.get("max_chunks", 16)),
-        aggregator=long_cfg.get("aggregator", "attention"),
         stage=stage,
         freeze_encoder=bool(long_cfg.get("freeze_encoder", stage == 2)),
     )

@@ -1,5 +1,3 @@
-"""Stage 4: LayoutLMv3 multi-label inference (Stage-2 hierarchical model)."""
-
 from __future__ import annotations
 
 from podder_task_foundation import Context, Payload

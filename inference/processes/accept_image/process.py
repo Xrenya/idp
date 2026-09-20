@@ -1,5 +1,3 @@
-"""Stage 1: accept an image path"""
-
 from __future__ import annotations
 
 from pathlib import Path

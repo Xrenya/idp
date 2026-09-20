@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Train LayoutLMv3 with CUDA and optional distributed data parallelism."""
-
 from __future__ import annotations
 
 import argparse
@@ -24,7 +22,7 @@ from src.prepared_dataset import TARGET_LABELS, create_prepared_dataloaders
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train LayoutLMv3 multi-label (DDP)")
+    p = argparse.ArgumentParser(description="Train LayoutLMv3 multi-label")
     p.add_argument("--config", type=str, default="config.yaml")
     p.add_argument("--train-parquet", type=str, default=None)
     p.add_argument("--output-dir", type=str, default=None)
@@ -43,7 +41,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Stage-1 checkpoint (best.pt) required for --stage 2",
     )
-    p.add_argument("--local_rank", type=int, default=-1)  # legacy
     return p.parse_args()
 
 
@@ -53,8 +50,6 @@ def load_config(path: str | Path) -> dict:
 
 
 def setup_distributed() -> tuple[int, int, int, torch.device]:
-    if not torch.cuda.is_available():
-        raise SystemExit("CUDA is required for training")
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))

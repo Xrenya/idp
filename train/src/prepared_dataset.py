@@ -1,5 +1,3 @@
-"""Dataset and data-loader helpers for prepared parquet shards."""
-
 from __future__ import annotations
 
 import io
@@ -22,11 +20,6 @@ TARGET_LABELS = ["letter", "form", "email", "resume"]
 Mode = Literal["head", "random_window", "random_boxes"]
 
 
-def _token_lens_per_word(tokenizer, words: Sequence[str]) -> list[int]:
-    """Count tokenizer subwords per OCR word, with a minimum of one."""
-    return [max(1, len(tokenizer.tokenize(str(w)))) for w in words]
-
-
 def sample_words_boxes_for_context(
     words: list[str],
     boxes: list[list[float]],
@@ -37,13 +30,12 @@ def sample_words_boxes_for_context(
     training: bool = True,
     num_special_tokens: int = 2,
 ) -> tuple[list[str], list[list[float]]]:
-    """Fit words and boxes within the LayoutLM token limit."""
     n = len(words)
     if n == 0:
         return words, boxes
 
     budget = max(1, int(max_length) - int(num_special_tokens))
-    tok_lens = _token_lens_per_word(tokenizer, words)
+    tok_lens = [max(1, len(tokenizer.tokenize(str(w)))) for w in words]
     total = int(sum(tok_lens))
     if total <= budget:
         return words, boxes
@@ -83,7 +75,6 @@ def sample_words_boxes_for_context(
 
 
 def decode_image(value: Any) -> Image.Image:
-    """Decode a parquet image stored as raw bytes or a bytes mapping."""
     raw = value["bytes"] if isinstance(value, dict) else value
     return Image.open(io.BytesIO(raw)).convert("RGB")
 
@@ -94,15 +85,11 @@ def train_val_index_split(
     val_ratio: float = 0.2,
     seed: int = 42,
 ) -> tuple[list[int], list[int]]:
-    """Create a deterministic train and validation index split."""
-    if not 0.0 < val_ratio < 1.0:
-        raise ValueError(f"val_ratio must be in (0,1), got {val_ratio}")
+    """A deterministic train and validation index split"""
     rng = np.random.default_rng(int(seed))
     perm = rng.permutation(n).tolist()
     n_val = max(1, int(round(n * val_ratio)))
     n_train = n - n_val
-    if n_train < 1:
-        raise ValueError(f"Not enough rows for split: n={n}, val_ratio={val_ratio}")
     train_idx = sorted(perm[:n_train])
     val_idx = sorted(perm[n_train:])
     return train_idx, val_idx
@@ -245,7 +232,6 @@ def create_prepared_dataloaders(
     rank: int = 0,
     world_size: int = 1,
 ) -> tuple[DataLoader, DataLoader]:
-    """Build train and validation loaders from one deterministic split."""
     data_cfg = config.get("data", {})
     aug_cfg = config.get("augmentation", {})
     train_cfg = config.get("train", {})
