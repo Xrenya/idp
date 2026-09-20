@@ -1,0 +1,126 @@
+{
+  "checkpoint": "outputs/layoutlmv3_stage2",
+  "weights_path": "outputs/layoutlmv3_stage2/best_stage2.pt",
+  "backend": "hf_split",
+  "batch_size": 16,
+  "max_eval_samples": 10000,
+  "quantized_checkpoint": "outputs/quantization/best_stage2_int8_hf_split.pt",
+  "fp32": {
+    "device": "cuda",
+    "num_params": 125921412,
+    "size_mb": 480.36199951171875,
+    "state_dict_mb": 480.43609619140625,
+    "latency": {
+      "avg_ms": 837.3802282003453,
+      "std_ms": 2.4361839289477825,
+      "min_ms": 834.2752910011768,
+      "max_ms": 840.9593220003444,
+      "p50_ms": 837.9331460000685,
+      "warmup": 3.0,
+      "runs": 10.0,
+      "batch_size": 16.0,
+      "device": "cuda"
+    },
+    "throughput_docs_per_s": 19.107210155160196,
+    "metrics": {
+      "micro_f1": 0.912751677852349,
+      "macro_f1": 0.9082383204892261,
+      "hamming_loss": 0.03170731707317073,
+      "per_class_f1": {
+        "letter": 0.8985507246376812,
+        "form": 0.84375,
+        "email": 0.9523809523809523,
+        "resume": 0.9382716049382716
+      },
+      "per_class": {
+        "letter": {
+          "f1": 0.8985507246376812,
+          "precision": 0.96875,
+          "recall": 0.8378378378378378,
+          "support": 37
+        },
+        "form": {
+          "f1": 0.84375,
+          "precision": 1.0,
+          "recall": 0.7297297297297297,
+          "support": 37
+        },
+        "email": {
+          "f1": 0.9523809523809523,
+          "precision": 1.0,
+          "recall": 0.9090909090909091,
+          "support": 44
+        },
+        "resume": {
+          "f1": 0.9382716049382716,
+          "precision": 0.9743589743589743,
+          "recall": 0.9047619047619048,
+          "support": 42
+        }
+      }
+    }
+  },
+  "int8": {
+    "device": "cuda",
+    "num_params": 125921412,
+    "size_mb": 237.67840576171875,
+    "state_dict_mb": 237.79714965820312,
+    "latency": {
+      "avg_ms": 799.817985199843,
+      "std_ms": 1.0701233107889754,
+      "min_ms": 798.4873309997056,
+      "max_ms": 802.005673000167,
+      "p50_ms": 800.149295000665,
+      "warmup": 3.0,
+      "runs": 10.0,
+      "batch_size": 16.0,
+      "device": "cuda"
+    },
+    "throughput_docs_per_s": 20.004551405532887,
+    "metrics": {
+      "micro_f1": 0.9163879598662207,
+      "macro_f1": 0.9126854358738417,
+      "hamming_loss": 0.03048780487804878,
+      "per_class_f1": {
+        "letter": 0.8985507246376812,
+        "form": 0.8615384615384616,
+        "email": 0.9523809523809523,
+        "resume": 0.9382716049382716
+      },
+      "per_class": {
+        "letter": {
+          "f1": 0.8985507246376812,
+          "precision": 0.96875,
+          "recall": 0.8378378378378378,
+          "support": 37
+        },
+        "form": {
+          "f1": 0.8615384615384616,
+          "precision": 1.0,
+          "recall": 0.7567567567567568,
+          "support": 37
+        },
+        "email": {
+          "f1": 0.9523809523809523,
+          "precision": 1.0,
+          "recall": 0.9090909090909091,
+          "support": 44
+        },
+        "resume": {
+          "f1": 0.9382716049382716,
+          "precision": 0.9743589743589743,
+          "recall": 0.9047619047619048,
+          "support": 42
+        }
+      }
+    }
+  },
+  "tradeoff": {
+    "size_reduction_pct": 50.52098084292356,
+    "speedup_x": 1.0469634888131667,
+    "macro_f1_drop": -0.004447115384615508,
+    "macro_f1_drop_pct": -0.48964190172245226,
+    "primary_metric": "macro_f1",
+    "discussion": "Backend=hf_split: INT8 LayoutLMv3 encoder (bitsandbytes) + FP32 aggregator/classifier"
+  }
+}
