@@ -1,0 +1,42 @@
+{
+  "image_path": "samples/resume.jpg",
+  "orientation": {
+    "rotate_degrees": 0,
+    "detected_orientation": 0,
+    "confidence": 2978.0,
+    "backend": "ocr_score",
+    "script": "",
+    "raw": {
+      "scores": {
+        "0": 2978.0,
+        "90": 1024.0,
+        "180": 2560.0,
+        "270": 932.0
+      }
+    },
+    "min_osd_confidence": 1.5,
+    "applied_rotation": 0
+  },
+  "ocr": {
+    "n_words": 537,
+    "width": 754,
+    "height": 1000,
+    "box_space": "pixel"
+  },
+  "prediction": {
+    "labels": [
+      "resume"
+    ],
+    "scores": {
+      "letter": 0.00988932978361845,
+      "form": 0.009300456382334232,
+      "email": 0.010697522200644016,
+      "resume": 0.9247183799743652
+    },
+    "is_none": false,
+    "checkpoint": "weights/layoutlm/best_stage2.pt",
+    "stage": 2,
+    "device": "cuda",
+    "n_ocr_words": 537
+  }
+}

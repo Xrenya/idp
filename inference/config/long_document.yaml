@@ -1,0 +1,5 @@
+max_tokens: 512
+chunk_size: 400
+chunk_stride: 100
+aggregator: attention
+max_chunks: 16

@@ -1,0 +1,5 @@
+lang: eng
+min_conf: 0.0
+dpi: 200
+max_side: 1280
+fast: true

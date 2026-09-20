@@ -1,0 +1,47 @@
+{
+  "image_path": "samples/resume_180.jpg",
+  "orientation": {
+    "rotate_degrees": 180,
+    "detected_orientation": 180,
+    "confidence": 634.0,
+    "backend": "ocr_score",
+    "script": "",
+    "raw": {
+      "scores": {
+        "0": 607.0,
+        "90": 486.0,
+        "180": 634.0,
+        "270": 531.0
+      },
+      "ocr_validate": {
+        "base_score": 607.0,
+        "rotated_score": 634.0,
+        "proposed_rotate": 180
+      }
+    },
+    "min_osd_confidence": 1.5,
+    "applied_rotation": 180
+  },
+  "ocr": {
+    "n_words": 138,
+    "width": 804,
+    "height": 1000,
+    "box_space": "pixel"
+  },
+  "prediction": {
+    "labels": [
+      "resume"
+    ],
+    "scores": {
+      "letter": 0.014319573529064655,
+      "form": 0.0073502082377672195,
+      "email": 0.00820494256913662,
+      "resume": 0.8875422477722168
+    },
+    "is_none": false,
+    "checkpoint": "weights/layoutlm/best_stage2.pt",
+    "stage": 2,
+    "device": "cuda",
+    "n_ocr_words": 138
+  }
+}

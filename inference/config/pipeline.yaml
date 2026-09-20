@@ -1,0 +1,5 @@
+serial:
+  - accept_image
+  - orient
+  - ocr
+  - layoutlm

@@ -1,0 +1,11 @@
+model_name: microsoft/layoutlmv3-base
+checkpoint: weights/layoutlm/best_stage2.pt
+stage: 2
+dropout: 0.1
+label_threshold: 0.5
+target_labels:
+  - letter
+  - form
+  - email
+  - resume
+device: cuda
