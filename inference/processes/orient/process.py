@@ -1,4 +1,4 @@
-"""Stage 2: detect page orientation and rotate using config threshold."""
+"""Stage 2: detect page orientation and rotate using config threshold"""
 
 from __future__ import annotations
 

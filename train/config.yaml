@@ -1,5 +1,4 @@
-# Training / quantization config (self-contained under train/)
-# Put prepared parquet shards under data/ (e.g. data/prepared/train_fixed/*.parquet).
+# Paths are relative to train/.
 
 data:
   target_labels:
@@ -18,12 +17,12 @@ augmentation:
   scale_range: [0.95, 1.05]
   brightness: 0.15
   contrast: 0.2
-  gauss_noise_var: 15.0
+  gauss_noise_std_range: [0.0, 0.06]
   apply_prob: 0.8
 
 train:
   model_name: microsoft/layoutlmv3-base
-  # Directory of fixed parquet shards. Val is always an 80/20 split of this corpus.
+  # Validation data is split from these shards.
   train_parquet: data
   val_ratio: 0.2
   output_dir: outputs/layoutlmv3

@@ -11,19 +11,8 @@ from podder_task_foundation.objects import Object
 
 def get_pil_image(payload: Payload, name: str = "image") -> Image.Image | None:
     obj = payload.get(name=name)
-    if obj is None:
-        return None
-    data = obj.data
-    if isinstance(data, Image.Image):
-        return data.convert("RGB")
-    path = getattr(obj, "path", None)
-    if path is not None:
-        return Image.open(path).convert("RGB")
-    if isinstance(data, str):
-        p = Path(data)
-        if p.is_file():
-            return Image.open(p).convert("RGB")
-    return None
+    p = Path(obj.data)
+    return Image.open(p).convert("RGB")
 
 
 def put_pil_image(payload: Payload, image: Image.Image, name: str = "image") -> None:

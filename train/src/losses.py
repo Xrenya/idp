@@ -8,11 +8,7 @@ import torch.nn.functional as F
 
 
 class MultiLabelFocalLoss(nn.Module):
-    """Sigmoid focal loss for multi-label classification.
-
-    FL = -alpha_t * (1 - p_t)^gamma * log(p_t)
-    Handles class imbalance better than plain BCE.
-    """
+    """Sigmoid focal loss for multi-label classification."""
 
     def __init__(
         self,

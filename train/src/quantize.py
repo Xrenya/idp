@@ -1,14 +1,4 @@
-"""Post-training quantization for LayoutLMv3MultiLabel (CUDA).
-
-Default strategy (HF-style split)
---------------------------------
-* **Encoder** — bitsandbytes ``Linear8bitLt`` (same as
-  ``transformers.BitsAndBytesConfig(load_in_8bit=True)`` on the backbone).
-* **Head** (attention aggregator + classifier) — kept in **FP32** on CUDA
-  (small, accuracy-sensitive; not INT8).
-
-``torch_dynamic`` is CPU-only and must not be compared to GPU FP32 latency.
-"""
+"""Post-training quantization for LayoutLMv3MultiLabel."""
 
 from __future__ import annotations
 
@@ -20,12 +10,10 @@ from typing import Any, Iterable, Literal
 import bitsandbytes as bnb
 import torch
 import torch.nn as nn
-from transformers import BitsAndBytesConfig
 
-QuantBackend = Literal["hf_split", "bitsandbytes", "torch_dynamic"]
+QuantBackend = Literal["hf_split", "bitsandbytes"]
 
-# LayoutLMv3 indexes ``rel_pos_bias.weight`` directly (``.weight.t()[idx]``).
-_LAYOUTLM_SKIP_LINEAR_SUBSTRINGS = (
+LAYOUTLM_SKIP = (
     "rel_pos_bias",
     "rel_pos_x_bias",
     "rel_pos_y_bias",
@@ -40,7 +28,7 @@ def _tensor_nbytes(t: torch.Tensor) -> int:
 
 
 def model_size_mb(model: nn.Module) -> float:
-    """Approximate resident weight size in MB (params, buffers, packed INT8)."""
+    """Approximate resident weight size in MB."""
     seen: set[int] = set()
     total = 0
 
@@ -59,14 +47,6 @@ def model_size_mb(model: nn.Module) -> float:
     for b in model.buffers(recurse=True):
         _add(b)
     for mod in model.modules():
-        if hasattr(mod, "_packed_params"):
-            try:
-                w, bias = mod._packed_params._weight_bias()  # type: ignore[attr-defined]
-                _add(w)
-                if bias is not None:
-                    _add(bias)
-            except Exception:
-                pass
         w = getattr(mod, "weight", None)
         if w is not None and hasattr(w, "CB") and getattr(w, "CB", None) is not None:
             _add(w.CB)
@@ -88,7 +68,7 @@ def count_parameters(model: nn.Module) -> int:
 
 def _skip_linear(qualified_name: str) -> bool:
     name = qualified_name.lower()
-    return any(s in name for s in _LAYOUTLM_SKIP_LINEAR_SUBSTRINGS)
+    return any(s in name for s in LAYOUTLM_SKIP)
 
 
 def _replace_linear_bnb(
@@ -97,7 +77,7 @@ def _replace_linear_bnb(
     threshold: float = 6.0,
     prefix: str = "",
 ) -> nn.Module:
-    """Recursively replace ``nn.Linear`` with ``bitsandbytes.nn.Linear8bitLt``."""
+    """Replace eligible Linear layers with bitsandbytes Linear8bitLt modules."""
     for name, child in list(module.named_children()):
         full = f"{prefix}.{name}" if prefix else name
         if isinstance(child, nn.Linear) and not isinstance(
@@ -133,22 +113,15 @@ def quantize_hf_split(
     *,
     threshold: float = 6.0,
 ) -> nn.Module:
-    """HF BitsAndBytes-style INT8 on LayoutLMv3 encoder; FP32 aggregator + classifier.
-
-    Equivalent to ``BitsAndBytesConfig(load_in_8bit=True)`` applied only to the
-    backbone. The Stage-2 head stays full precision (separate from encoder INT8).
-    """
+    """Quantize the LayoutLMv3 encoder and keep the stage-2 head in FP32."""
     if device.type != "cuda":
         raise RuntimeError("hf_split quantization requires CUDA")
-    # Document / validate config shape used by transformers.
-    _ = BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=threshold)
+    if not hasattr(model, "encoder"):
+        raise RuntimeError("hf_split expects a model with an encoder")
 
     model = copy.deepcopy(model)
     model.eval()
     model.cpu()
-    if not hasattr(model, "encoder"):
-        raise RuntimeError("Expected LayoutLMv3MultiLabel with .encoder")
-    # INT8 LayoutLM only — leave aggregator + classifier as nn.Linear (FP32).
     _replace_linear_bnb(model.encoder, threshold=threshold)
     model.to(device)
     model.eval()
@@ -161,9 +134,9 @@ def quantize_bitsandbytes(
     *,
     threshold: float = 6.0,
 ) -> nn.Module:
-    """INT8 every eligible Linear (encoder + head) via bitsandbytes."""
+    """Quantize every eligible Linear layer with bitsandbytes."""
     if device.type != "cuda":
-        raise RuntimeError("bitsandbytes Linear8bitLt requires CUDA")
+        raise RuntimeError("bitsandbytes quantization requires CUDA")
 
     model = copy.deepcopy(model)
     model.eval()
@@ -174,56 +147,6 @@ def quantize_bitsandbytes(
     return model
 
 
-class _FP32Linear(nn.Module):
-    """Drop-in Linear that is *not* ``nn.Linear`` so dynamic quant skips it."""
-
-    def __init__(self, in_features: int, out_features: int, bias: bool = True) -> None:
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = nn.Parameter(torch.empty(out_features, in_features))
-        self.bias = nn.Parameter(torch.empty(out_features)) if bias else None
-
-    @classmethod
-    def from_linear(cls, linear: nn.Linear) -> "_FP32Linear":
-        m = cls(linear.in_features, linear.out_features, linear.bias is not None)
-        with torch.no_grad():
-            m.weight.copy_(linear.weight)
-            if linear.bias is not None and m.bias is not None:
-                m.bias.copy_(linear.bias)
-        return m
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return nn.functional.linear(x, self.weight, self.bias)
-
-
-def _protect_skip_linears(module: nn.Module, prefix: str = "") -> None:
-    for name, child in list(module.named_children()):
-        full = f"{prefix}.{name}" if prefix else name
-        if isinstance(child, nn.Linear) and _skip_linear(full):
-            setattr(module, name, _FP32Linear.from_linear(child))
-        else:
-            _protect_skip_linears(child, full)
-
-
-def quantize_torch_dynamic(model: nn.Module) -> nn.Module:
-    """CPU-only dynamic INT8 on eligible ``nn.Linear`` layers.
-
-    Do **not** use this for GPU latency comparisons — kernels run on CPU.
-    """
-    model = copy.deepcopy(model)
-    model.eval()
-    model.cpu()
-    _protect_skip_linears(model)
-    quantized = torch.ao.quantization.quantize_dynamic(
-        model,
-        {nn.Linear},
-        dtype=torch.qint8,
-    )
-    quantized.eval()
-    return quantized
-
-
 def quantize_model(
     model: nn.Module,
     *,
@@ -231,19 +154,13 @@ def quantize_model(
     device: torch.device | None = None,
     threshold: float = 6.0,
 ) -> tuple[nn.Module, str]:
-    """Return ``(quantized_model, backend_used)``."""
+    """Return the quantized model and selected backend name."""
     device = device or torch.device("cuda")
     if backend == "hf_split":
         return quantize_hf_split(model, device, threshold=threshold), "hf_split"
     if backend == "bitsandbytes":
         return quantize_bitsandbytes(model, device, threshold=threshold), "bitsandbytes"
-    if backend == "torch_dynamic":
-        return quantize_torch_dynamic(model), "torch_dynamic"
     raise ValueError(f"Unknown backend: {backend}")
-
-
-def _is_torch_dynamic_quant(model: nn.Module) -> bool:
-    return any("quantized" in type(m).__module__ for m in model.modules())
 
 
 @torch.inference_mode()
@@ -254,14 +171,12 @@ def benchmark_latency_ms(
     *,
     warmup: int = 5,
     runs: int = 20,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Average inference latency (ms) for one forward on a fixed batch."""
     model.eval()
-    # torch.ao dynamic INT8 is CPU-only; keep CUDA path for bnb / hf_split.
-    run_device = torch.device("cpu") if _is_torch_dynamic_quant(model) else device
-    model.to(run_device)
+    model.to(device)
     moved = {
-        k: v.to(run_device) if torch.is_tensor(v) else v
+        k: v.to(device) if torch.is_tensor(v) else v
         for k, v in batch.items()
         if k not in {"labels", "index"}
     }
@@ -269,7 +184,7 @@ def benchmark_latency_ms(
     def _step() -> None:
         out = model(**moved)
         _ = out["logits"]
-        if run_device.type == "cuda":
+        if device.type == "cuda":
             torch.cuda.synchronize()
 
     for _ in range(max(0, warmup)):
@@ -277,7 +192,7 @@ def benchmark_latency_ms(
 
     times: list[float] = []
     for _ in range(max(1, runs)):
-        if run_device.type == "cuda":
+        if device.type == "cuda":
             torch.cuda.synchronize()
         t0 = time.perf_counter()
         _step()
@@ -295,7 +210,7 @@ def benchmark_latency_ms(
         "warmup": float(warmup),
         "runs": float(runs),
         "batch_size": float(next(iter(moved.values())).shape[0]),
-        "device": str(run_device),
+        "device": str(device),
     }
 
 
@@ -305,16 +220,15 @@ def collect_probs_labels(
     loader: Iterable[dict[str, Any]],
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run model over a loader; return ``(probs [N,C], labels [N,C])``."""
+    """Collect class probabilities and labels for a loader."""
     model.eval()
-    run_device = torch.device("cpu") if _is_torch_dynamic_quant(model) else device
-    model.to(run_device)
+    model.to(device)
 
     all_probs, all_labels = [], []
     for batch in loader:
         labels = batch["labels"]
         feed = {
-            k: v.to(run_device)
+            k: v.to(device)
             for k, v in batch.items()
             if k not in {"labels", "index"} and torch.is_tensor(v)
         }

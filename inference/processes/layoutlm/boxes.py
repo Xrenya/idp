@@ -1,4 +1,4 @@
-"""Pixel ↔ LayoutLM 0–1000 box helpers (used by LayoutLM inference)."""
+"""Convert bounding boxes between pixel and LayoutLM coordinates."""
 
 from __future__ import annotations
 

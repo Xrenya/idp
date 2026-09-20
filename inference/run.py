@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-python run.py --image samples/resume_180.jpg
-python run.py --image samples/resume_180.jpg -o samples/prediction_resume_180.json -v
-"""
+"""Run document classification from the command line."""
 
 from __future__ import annotations
 

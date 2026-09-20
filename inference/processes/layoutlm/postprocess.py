@@ -1,4 +1,4 @@
-"""Inference helpers: multi-label JSON + word budget for Stage-2 long context."""
+"""Format predictions and enforce long-document token limits."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def prediction_to_json(
     target_names: Sequence[str] = TARGET_LABELS,
     threshold: float = 0.5,
 ) -> dict[str, Any]:
-    """Threshold multi-label probs → assignment JSON."""
+    """Format thresholded class probabilities as JSON data."""
     if isinstance(probs, torch.Tensor):
         probs = probs.detach().cpu().float().numpy()
     probs = np.asarray(probs, dtype=np.float32).reshape(-1)
@@ -34,14 +34,14 @@ def stage2_token_budget(
     max_chunks: int,
     num_special_tokens: int = 2,
 ) -> int:
-    """How many subword tokens Stage-2 sliding windows can cover."""
+    """Return the subword capacity of the configured sliding windows."""
     chunk_size = int(chunk_size)
     chunk_stride = int(chunk_stride)
     max_chunks = max(1, int(max_chunks))
     if max_chunks == 1:
         cover = chunk_size
     else:
-        # windows: [0,cs), [stride, stride+cs), ... → last start = (C-1)*stride
+        # Each additional window contributes chunk_stride new tokens.
         cover = chunk_size + (max_chunks - 1) * chunk_stride
     return max(1, cover - int(num_special_tokens))
 
@@ -56,11 +56,7 @@ def truncate_words_for_stage2(
     max_chunks: int,
     num_special_tokens: int = 2,
 ) -> tuple[list[str], list[list[float]]]:
-    """Keep a word prefix that fits the Stage-2 overlapping-token budget.
-
-    Does **not** shrink to a single 512 window. The encoder still sees only
-    ``chunk_size`` tokens at a time; overlap comes from ``chunk_stride``.
-    """
+    """Trim words and boxes to the capacity of the stage-2 windows."""
     n = len(words)
     if n == 0:
         return words, boxes

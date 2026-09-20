@@ -1,8 +1,4 @@
-"""Box helpers for LayoutLMv3 inputs.
-
-Store boxes in **pixel** coordinates on the saved image.
-Normalize to LayoutLM 0–1000 only at train time (after augmentation).
-"""
+"""Bounding-box helpers for LayoutLMv3 inputs."""
 
 from __future__ import annotations
 

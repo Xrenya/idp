@@ -1,14 +1,11 @@
-"""OCR helpers for LayoutLMv3 inputs.
-
-Store boxes in **pixel** coordinates on the saved image.
-Normalize to LayoutLM 0–1000 only at train time (after augmentation).
-"""
+"""OCR and bounding-box helpers for LayoutLMv3."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -19,7 +16,6 @@ from pytesseract.pytesseract import TesseractError
 
 
 def normalize_box(box: Sequence[int] | Sequence[float], width: int, height: int) -> list[int]:
-    """Normalize a pixel box to the LayoutLM 0–1000 coordinate space."""
     x0, y0, x1, y1 = box
     return [
         max(0, min(1000, int(1000 * float(x0) / max(width, 1)))),
@@ -32,7 +28,6 @@ def normalize_box(box: Sequence[int] | Sequence[float], width: int, height: int)
 def denormalize_box(
     box: Sequence[int] | Sequence[float], width: int, height: int
 ) -> list[int]:
-    """Convert a LayoutLM 0–1000 box back to pixel coordinates."""
     x0, y0, x1, y1 = box
     return [
         max(0, min(width, int(float(x0) / 1000.0 * width))),
@@ -55,7 +50,6 @@ def denormalize_boxes(
 
 
 def boxes_look_normalized(boxes: Sequence[Sequence[int] | Sequence[float]]) -> bool:
-    """Heuristic: LayoutLM boxes fit in [0, 1000]."""
     if not boxes:
         return True
     return max(float(v) for box in boxes for v in box) <= 1000.0
@@ -66,22 +60,16 @@ def _prepare_tesseract_image(
     dpi: int = 200,
     max_side: int = 1280,
 ) -> tuple[Image.Image, float, float]:
-    """RGB image with DPI + optional downscale for speed.
-
-    Returns (image, scale_x, scale_y) mapping OCR coords → original pixels.
-    """
     rgb = image.convert("RGB")
     orig_w, orig_h = rgb.size
     w, h = orig_w, orig_h
 
-    # Upscale tiny pages.
     if min(w, h) < 64:
         scale = max(2, int(64 / max(min(w, h), 1)))
         w, h = w * scale, h * scale
         rgb = rgb.resize((w, h), Image.BICUBIC)
 
-    # Downscale large pages — big Tesseract speedup, usually enough for LayoutLM.
-    long_side = max(w, h)
+    long_side = max(w, h)  # speedup
     if long_side > max_side:
         ratio = max_side / float(long_side)
         w, h = max(1, int(w * ratio)), max(1, int(h * ratio))
@@ -105,13 +93,6 @@ def run_ocr(
     max_side: int = 1280,
     fast: bool = True,
 ) -> tuple[list[str], list[list[int]]]:
-    """Extract words + boxes with pytesseract.
-
-    By default returns **pixel** boxes on ``image``. Set ``normalize=True`` only
-    if you explicitly want LayoutLM 0–1000 coordinates.
-
-    Never raises on bad pages: returns ``([], [])`` if Tesseract fails after retries.
-    """
     rgb, sx, sy = _prepare_tesseract_image(image, dpi=dpi, max_side=max_side)
     width, height = rgb.size
     orig_w, orig_h = image.convert("RGB").size
@@ -140,7 +121,7 @@ def run_ocr(
         except TesseractError as exc:
             last_err = exc
             continue
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             last_err = exc
             continue
 
@@ -157,7 +138,10 @@ def run_ocr(
             )
             tmp_path.unlink(missing_ok=True)
         except Exception as exc:
-            print(f"[warn] tesseract failed on image size={rgb.size}: {last_err or exc}")
+            warnings.warn(
+                f"Tesseract failed for image size {rgb.size}: {last_err or exc}",
+                stacklevel=2,
+            )
             return [], []
 
     words: list[str] = []
@@ -186,8 +170,6 @@ def run_ocr(
 
 
 class OCRCache:
-    """Simple on-disk cache keyed by image bytes hash + sample id."""
-
     def __init__(self, cache_dir: str | Path) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

@@ -1,4 +1,4 @@
-"""LayoutLM Stage-2 load + single-document prediction (GPU, long context)."""
+"""Load LayoutLMv3 and run inference for one document."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ def load_layoutlm_bundle(
     long_cfg: dict[str, Any],
     num_labels: int,
 ) -> dict[str, Any]:
-    """Load Stage-2 model + processor; checkpoint/device come from config."""
     global MODEL_CACHE
     checkpoint = Path(str(cfg.get("checkpoint", "weights/layoutlm/best_stage2.pt")))
     device = torch.device(str(cfg.get("device", "cuda")))
@@ -76,7 +75,6 @@ def predict_document(
     threshold: float,
     n_ocr_words: int | None = None,
 ) -> dict[str, Any]:
-    """Run Stage-2 LayoutLM with overlapping chunks over a long token sequence."""
     chunk_size = int(long_cfg.get("chunk_size", 400))
     chunk_stride = int(long_cfg.get("chunk_stride", 100))
     max_chunks = int(long_cfg.get("max_chunks", 16))
@@ -100,7 +98,6 @@ def predict_document(
     device = bundle["device"]
     tokenizer = getattr(processor, "tokenizer", processor)
 
-    # Keep enough words for Stage-2 sliding windows (not a single 512 cut).
     words, boxes = truncate_words_for_stage2(
         words,
         boxes,
@@ -111,7 +108,6 @@ def predict_document(
     )
     norm_boxes = normalize_boxes(boxes, width, height)
 
-    # Full sequence (no 512 truncate). Stage-2 model splits into overlapping chunks.
     encoding = processor(
         image,
         words,

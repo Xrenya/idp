@@ -1,9 +1,4 @@
-"""PyTorch Dataset / DataLoader for ``data/prepared/train_fixed`` shards.
-
-- No HuggingFace ``datasets`` (Polars + PyArrow only).
-- Loads a directory of ``*.parquet`` shards lazily (one shard cached).
-- Always builds an 80/20 train/val split from the same fixed corpus.
-"""
+"""Dataset and data-loader helpers for prepared parquet shards."""
 
 from __future__ import annotations
 
@@ -28,7 +23,7 @@ Mode = Literal["head", "random_window", "random_boxes"]
 
 
 def _token_lens_per_word(tokenizer, words: Sequence[str]) -> list[int]:
-    """How many subword tokens each OCR word becomes (never 0)."""
+    """Count tokenizer subwords per OCR word, with a minimum of one."""
     return [max(1, len(tokenizer.tokenize(str(w)))) for w in words]
 
 
@@ -42,7 +37,7 @@ def sample_words_boxes_for_context(
     training: bool = True,
     num_special_tokens: int = 2,
 ) -> tuple[list[str], list[list[float]]]:
-    """Fit words/boxes into LayoutLM **token** budget (not word count)."""
+    """Fit words and boxes within the LayoutLM token limit."""
     n = len(words)
     if n == 0:
         return words, boxes
@@ -88,7 +83,7 @@ def sample_words_boxes_for_context(
 
 
 def decode_image(value: Any) -> Image.Image:
-    """Decode prepared parquet image column (HF-style ``{bytes, path}`` or raw bytes)."""
+    """Decode a parquet image stored as raw bytes or a bytes mapping."""
     raw = value["bytes"] if isinstance(value, dict) else value
     return Image.open(io.BytesIO(raw)).convert("RGB")
 
@@ -99,7 +94,7 @@ def train_val_index_split(
     val_ratio: float = 0.2,
     seed: int = 42,
 ) -> tuple[list[int], list[int]]:
-    """Deterministic 80/20 (or custom) split over ``0 .. n-1``."""
+    """Create a deterministic train and validation index split."""
     if not 0.0 < val_ratio < 1.0:
         raise ValueError(f"val_ratio must be in (0,1), got {val_ratio}")
     rng = np.random.default_rng(int(seed))
@@ -114,8 +109,6 @@ def train_val_index_split(
 
 
 class PreparedParquetDataset(Dataset):
-    """Multi-label LayoutLM dataset over prepared / train_fixed parquet shards."""
-
     def __init__(
         self,
         parquet_dir: str | Path,
@@ -252,7 +245,7 @@ def create_prepared_dataloaders(
     rank: int = 0,
     world_size: int = 1,
 ) -> tuple[DataLoader, DataLoader]:
-    """Build train/val loaders by splitting ``train_parquet`` 80/20 by seed."""
+    """Build train and validation loaders from one deterministic split."""
     data_cfg = config.get("data", {})
     aug_cfg = config.get("augmentation", {})
     train_cfg = config.get("train", {})
@@ -301,10 +294,11 @@ def create_prepared_dataloaders(
         indices=val_idx,
         **common,
     )
-    print(
-        f"[data] {int((1 - val_ratio) * 100)}/{int(val_ratio * 100)} split from {train_parquet}: "
-        f"train={len(train_ds)} val={len(val_ds)} seed={seed}"
-    )
+    if rank == 0:
+        print(
+            f"Dataset split ({train_parquet}): "
+            f"{len(train_ds)} train, {len(val_ds)} validation, seed {seed}"
+        )
 
     batch_size = int(data_cfg.get("batch_size", 4))
     num_workers = int(data_cfg.get("num_workers", 4))

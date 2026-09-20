@@ -1,17 +1,4 @@
-"""Document page orientation correction (0/90/180/270).
-
-Recommendation
---------------
-Do **not** train a custom orientation model first.
-
-1. **Default: Tesseract OSD** (`image_to_osd`) — free, fast, built for scanned pages.
-2. **Fallback: 4-angle OCR score** — rotate to {0,90,180,270}, run cheap OCR, pick
-   the angle with the most readable text (helps when OSD confidence is low).
-3. **Train / use a dedicated classifier** (e.g. PaddleOCR `PP-LCNet` doc-ori) only if
-   OSD+fallback still mis-rotates a meaningful fraction of your pages.
-
-GOT-OCR2.0 is for text extraction, not orientation. Always fix orientation *before* OCR.
-"""
+"""Page orientation detection and correction."""
 
 from __future__ import annotations
 
@@ -28,7 +15,7 @@ OrientationBackend = Literal["osd", "ocr_score", "auto", "none"]
 @dataclass
 class OrientationResult:
     rotate_degrees: int  # clockwise rotation applied to correct the page
-    detected_orientation: int  # OSD "orientation in degrees" when available
+    detected_orientation: in
     confidence: float
     backend: str
     script: str = ""
@@ -40,11 +27,11 @@ class OrientationResult:
 
 
 def apply_rotation(image: Image.Image, degrees_clockwise: int) -> Image.Image:
-    """Rotate image so text becomes upright. PIL rotate is counter-clockwise → negate."""
+    """Rotate an image clockwise"""
     degrees_clockwise = int(degrees_clockwise) % 360
     if degrees_clockwise == 0:
         return image.convert("RGB")
-    # Expand keeps full page; white fill matches paper scans.
+    # conter-clockwise with white canvas
     return image.convert("RGB").rotate(-degrees_clockwise, expand=True, fillcolor=(255, 255, 255))
 
 
@@ -52,7 +39,6 @@ def detect_orientation_osd(
     image: Image.Image,
     min_characters_to_try: int = 20,
 ) -> OrientationResult:
-    """Tesseract Orientation and Script Detection."""
     rgb = image.convert("RGB")
     config = f"--psm 0 -c min_characters_to_try={int(min_characters_to_try)}"
     try:
@@ -78,13 +64,11 @@ def detect_orientation_osd(
 
 
 def _ocr_readable_score(image: Image.Image) -> float:
-    """Cheap readability proxy: alphanumeric char count from Tesseract."""
     text = pytesseract.image_to_string(image.convert("RGB"), config="--psm 6") or ""
     return float(sum(ch.isalnum() for ch in text))
 
 
 def detect_orientation_ocr_score(image: Image.Image) -> OrientationResult:
-    """Try 0/90/180/270 and keep the rotation with the best OCR readability score."""
     rgb = image.convert("RGB")
     best_rot, best_score = 0, -1.0
     scores: dict[str, float] = {}
@@ -110,15 +94,6 @@ def correct_orientation(
     min_characters_to_try: int = 20,
     validate_with_ocr_score: bool = True,
 ) -> tuple[Image.Image, OrientationResult]:
-    """Detect orientation and return (corrected_image, metadata).
-
-    Important: low-confidence OSD often false-triggers 180° on RVL-CDIP and
-    upside-downs already-upright pages. We therefore:
-      - ignore OSD rotations when confidence < min_osd_confidence
-      - optionally verify proposed rotation with a cheap OCR readability score
-
-    Use backend=\"none\" to skip orientation entirely (fastest for preparation).
-    """
     if backend == "none":
         return image.convert("RGB"), OrientationResult(
             rotate_degrees=0,
@@ -137,7 +112,7 @@ def correct_orientation(
                 result.raw = {"osd": osd.to_dict(), "ocr_score": result.raw}
                 result.backend = "auto:ocr_score"
             else:
-                # Strict OSD mode: do NOT apply low-confidence rotations.
+                # In OSD-only mode, low-confidence rotations are ignored.
                 result = OrientationResult(
                     rotate_degrees=0,
                     detected_orientation=osd.detected_orientation,
@@ -150,8 +125,6 @@ def correct_orientation(
             result = osd
             result.backend = "auto:osd" if backend == "auto" else "osd"
 
-    # Extra guard: if OSD/auto proposes a non-zero rotation, keep it only if OCR
-    # readability does not get worse.
     if validate_with_ocr_score and result.rotate_degrees % 360 != 0:
         base_score = _ocr_readable_score(image)
         rotated = apply_rotation(image, result.rotate_degrees)
@@ -162,7 +135,7 @@ def correct_orientation(
             "rotated_score": rot_score,
             "proposed_rotate": result.rotate_degrees,
         }
-        if rot_score + 5.0 < base_score:  # allow tiny ties; reject clear regressions
+        if rot_score + 5.0 < base_score:
             result = OrientationResult(
                 rotate_degrees=0,
                 detected_orientation=result.detected_orientation,

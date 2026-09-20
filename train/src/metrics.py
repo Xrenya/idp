@@ -14,10 +14,8 @@ from sklearn.metrics import (
 )
 
 
-def _to_numpy(x: torch.Tensor | np.ndarray) -> np.ndarray:
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
+def to_numpy(x: torch.Tensor) -> np.ndarray:
+    return x.detach().cpu().numpy()
 
 
 def multilabel_metrics(
@@ -28,8 +26,8 @@ def multilabel_metrics(
     class_names: Sequence[str] | None = None,
 ) -> dict:
     """Compute micro/macro/per-class F1 and Hamming loss."""
-    yt = _to_numpy(y_true).astype(np.int32)
-    yp = (_to_numpy(y_prob) >= threshold).astype(np.int32)
+    yt = to_numpy(y_true).astype(np.int32)
+    yp = (to_numpy(y_prob) >= threshold).astype(np.int32)
     if yt.ndim == 1:
         yt = yt.reshape(1, -1)
         yp = yp.reshape(1, -1)

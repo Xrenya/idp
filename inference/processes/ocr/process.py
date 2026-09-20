@@ -1,4 +1,4 @@
-"""Stage 3: OCR words + boxes for LayoutLM input."""
+"""Stage 3: OCR words, boxes for LayoutLM input"""
 
 from __future__ import annotations
 
@@ -17,8 +17,6 @@ class Process(ProcessBase):
     ) -> None:
         cfg = context.config.get("config") or {}
         image = get_pil_image(input_payload, "image")
-        if image is None:
-            raise ValueError("ocr stage requires payload 'image'")
 
         words, boxes = run_ocr(
             image,
@@ -29,6 +27,7 @@ class Process(ProcessBase):
             max_side=int(cfg.get("max_side", 1280)),
             fast=bool(cfg.get("fast", True)),
         )
+
         width, height = image.size
         ocr_meta = {
             "n_words": len(words),

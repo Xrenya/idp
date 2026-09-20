@@ -1,21 +1,8 @@
-"""LayoutLMv3 multi-label + two-stage hierarchical overhead (Task 3).
-
-Training recipe
----------------
-**Stage 1** — fine-tune LayoutLMv3 (+ linear head) on in-window pages
-(or random box windows). Save ``best.pt``.
-
-**Stage 2** — load Stage-1 weights, **freeze** the encoder, chunk long pages,
-extract CLS features with ``torch.no_grad()``, and train only the
-**overhead** (aggregator + classifier) that selects relevant chunk features
-and predicts labels.
-
-The joint path in older code (encode chunks end-to-end with gradients through
-LayoutLMv3) is *not* this recipe. Use ``stage=1`` / ``stage=2`` / ``freeze_encoder=True``.
-"""
+"""Two-stage LayoutLMv3 classifier for short and chunked documents."""
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import torch
@@ -27,7 +14,7 @@ AggregatorKind = Literal["attention", "transformer", "bilstm"]
 
 
 class AttentionAggregator(nn.Module):
-    """Learns to weigh chunk CLS features (the 'overhead' selector)."""
+    """Pool chunk CLS embeddings with learned attention weights."""
 
     def __init__(self, hidden: int, dropout: float = 0.1) -> None:
         super().__init__()
@@ -113,16 +100,7 @@ def sliding_windows(seq_len: int, chunk_size: int, stride: int) -> list[tuple[in
 
 
 class LayoutLMv3MultiLabel(nn.Module):
-    """Two-stage LayoutLMv3 multi-label classifier.
-
-    Parameters
-    ----------
-    stage:
-      ``1`` — encoder + classifier only (flat in-window training).
-      ``2`` — freeze encoder, run overhead aggregator on chunk CLS features.
-    freeze_encoder:
-      If True (default in stage 2), LayoutLMv3 weights do not receive gradients.
-    """
+    """Run flat classification in stage 1 and chunk aggregation in stage 2."""
 
     def __init__(
         self,
@@ -149,7 +127,6 @@ class LayoutLMv3MultiLabel(nn.Module):
         self.chunk_stride = int(chunk_stride)
         self.max_chunks = int(max_chunks)
         self.stage = int(stage)
-        # Aggregator only in Stage 2 — unused Stage-1 params break DDP otherwise.
         self.aggregator = (
             build_aggregator(aggregator, hidden, dropout=dropout)
             if self.stage == 2
@@ -162,7 +139,6 @@ class LayoutLMv3MultiLabel(nn.Module):
         if freeze_encoder:
             self.freeze_encoder()
 
-    # ------------------------------------------------------------------ API
     def freeze_encoder(self) -> None:
         self.encoder.eval()
         for p in self.encoder.parameters():
@@ -175,28 +151,27 @@ class LayoutLMv3MultiLabel(nn.Module):
         self._encoder_frozen = False
 
     def overhead_parameters(self):
-        """Parameters to optimize in Stage 2 (aggregator + classifier)."""
+        """Yield the parameters trained in stage 2."""
         if self.aggregator is None:
-            raise RuntimeError("No aggregator — build model with stage=2")
+            raise RuntimeError("No aggregator: build model with stage=2")
         yield from self.aggregator.parameters()
         yield from self.classifier.parameters()
         yield from self.dropout.parameters()
 
     def load_stage1_checkpoint(self, path: str, strict: bool = False) -> None:
-        """Load Stage-1 weights (encoder + classifier); aggregator may be missing."""
+        """Load stage-1 weights; aggregator weights may be absent."""
         state = torch.load(path, map_location="cpu")
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
         # Strip DDP prefix if present.
         state = {k.replace("module.", "", 1): v for k, v in state.items()}
         missing, unexpected = self.load_state_dict(state, strict=strict)
+        missing = [key for key in missing if not key.startswith("aggregator.")]
         if missing:
-            # Expected: aggregator.* when loading a pure stage-1 ckpt.
-            print(f"[stage2] missing keys (ok if aggregator): {missing[:8]}...")
+            warnings.warn(f"Missing checkpoint keys: {missing[:8]}", stacklevel=2)
         if unexpected:
-            print(f"[stage2] unexpected keys: {unexpected[:8]}...")
+            warnings.warn(f"Unused checkpoint keys: {unexpected[:8]}", stacklevel=2)
 
-    # -------------------------------------------------------------- encode
     def encode_cls(
         self,
         input_ids,
@@ -205,7 +180,7 @@ class LayoutLMv3MultiLabel(nn.Module):
         pixel_values,
         **kwargs,
     ) -> torch.Tensor:
-        """LayoutLMv3 CLS features. No grad when encoder is frozen."""
+        """Return CLS features without gradients when the encoder is frozen."""
         if self._encoder_frozen:
             self.encoder.eval()
             with torch.no_grad():
@@ -235,7 +210,7 @@ class LayoutLMv3MultiLabel(nn.Module):
         chunk_mask: torch.Tensor | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return ``(chunk_cls [B,C,H], chunk_mask [B,C])`` from a frozen/live encoder."""
+        """Return chunk CLS features and their validity mask."""
         if input_ids.dim() == 2:
             input_ids, attention_mask, bbox, chunk_mask = self._make_chunks(
                 input_ids, attention_mask, bbox
@@ -260,7 +235,7 @@ class LayoutLMv3MultiLabel(nn.Module):
         chunk_embs: torch.Tensor,
         chunk_mask: torch.Tensor,
     ) -> dict:
-        """Stage-2 head only: select relevant chunk features → logits."""
+        """Aggregate chunk features and return classification logits."""
         if self.aggregator is None:
             raise RuntimeError("forward_overhead requires stage=2 (aggregator)")
         pooled = self.aggregator(chunk_embs, chunk_mask)
@@ -336,13 +311,11 @@ class LayoutLMv3MultiLabel(nn.Module):
         if input_ids is None and chunk_embs is None:
             raise ValueError("Need input_ids or chunk_embs")
 
-        # --- Stage 2 with precomputed features ---
         if chunk_embs is not None:
             if chunk_mask is None:
                 raise ValueError("chunk_mask required with chunk_embs")
             return self.forward_overhead(chunk_embs, chunk_mask)
 
-        # --- Stage 1: single-window LayoutLMv3 ---
         if self.stage == 1:
             pooled = self.encode_cls(
                 input_ids, attention_mask, bbox, pixel_values, **kwargs
@@ -350,7 +323,6 @@ class LayoutLMv3MultiLabel(nn.Module):
             logits = self.classifier(self.dropout(pooled))
             return {"logits": logits}
 
-        # --- Stage 2: frozen encoder → overhead on chunks ---
         feats, cmask = self.extract_chunk_features(
             input_ids,
             attention_mask,

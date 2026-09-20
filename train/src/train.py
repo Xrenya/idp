@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-GPU LayoutLMv3 training (PyTorch DDP, CUDA only).
-
-Example (2 GPUs):
-  torchrun --nproc_per_node=2 src/train.py --config config.yaml
-
-Single GPU:
-  python src/train.py --config config.yaml
-"""
+"""Train LayoutLMv3 with CUDA and optional distributed data parallelism."""
 
 from __future__ import annotations
 
@@ -24,10 +17,6 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoProcessor
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from src.losses import MultiLabelFocalLoss
 from src.metrics import multilabel_metrics
 from src.model import LayoutLMv3MultiLabel
@@ -36,7 +25,7 @@ from src.prepared_dataset import TARGET_LABELS, create_prepared_dataloaders
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train LayoutLMv3 multi-label (DDP)")
-    p.add_argument("--config", type=str, default=str(ROOT / "config.yaml"))
+    p.add_argument("--config", type=str, default="config.yaml")
     p.add_argument("--train-parquet", type=str, default=None)
     p.add_argument("--output-dir", type=str, default=None)
     p.add_argument("--epochs", type=int, default=None)
@@ -203,9 +192,8 @@ def main() -> None:
         long_cfg["freeze_encoder"] = True
 
     if is_main(rank):
-        print(f"train_parquet={train_parquet}")
-        print(f"stage={stage}")
-        print(f"world_size={world_size} device={device}")
+        print(f"Training data: {train_parquet}")
+        print(f"Stage {stage}, {world_size} process(es), device {device}")
 
     processor = AutoProcessor.from_pretrained(model_name, apply_ocr=False)
     train_loader, val_loader = create_prepared_dataloaders(
@@ -231,13 +219,13 @@ def main() -> None:
     if stage == 2:
         if not enc_ckpt:
             raise SystemExit(
-                "Stage 2 requires --encoder-checkpoint path/to/stage1/best.pt"
+                "Stage 2 requires --encoder-checkpoint stage1/best.pt"
             )
         raw = model.module if isinstance(model, DDP) else model
         raw.load_stage1_checkpoint(enc_ckpt, strict=False)
         raw.freeze_encoder()
         if is_main(rank):
-            print(f"Loaded Stage-1 encoder from {enc_ckpt}; overhead params only")
+            print(f"Loaded encoder weights from {enc_ckpt}")
 
     if world_size > 1:
         model = DDP(
@@ -255,7 +243,7 @@ def main() -> None:
 
     raw_model = model.module if isinstance(model, DDP) else model
     if stage == 2:
-        params = list(raw_model.overhead_parameters())
+        params = list(raw_model.agg_parameters())
         lr = float(args.lr or train_cfg.get("stage2_lr", lr * 10))
     else:
         params = list(raw_model.parameters())

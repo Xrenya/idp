@@ -1,29 +1,44 @@
 # ADCS Inference
 
-Standalone document classification pipeline on [podder-task-foundation](https://github.com/podder-ai/podder-task-foundation).
+Classification pipeline on [podder-task-foundation](https://github.com/podder-ai/podder-task-foundation).
 
 
 ## Layout
 
 ```text
-.
-|-- run.py
-|-- requirements.txt
-|-- config/
-|   |-- pipeline.yaml
-|   |-- long_document.yaml
-|   |-- output.yaml
-|   |-- accept_image/config.yaml
-|   |-- orient/config.yaml
-|   |-- ocr/config.yaml
-|   `-- layoutlm/config.yaml
-|-- weights/layoutlm/best_stage2.pt
-|-- samples/example.png
-`-- processes/
-    |-- accept_image/process.py
-    |-- orient/{process,orientation}.py
-    |-- ocr/{process,ocr}.py
-    `-- layoutlm/{process,infer,model,...}.py
+run.py
+requirements.txt
+config/
+  pipeline.yaml
+  long_document.yaml
+  output.yaml
+  accept_image/
+    config.yaml
+  orient/
+    config.yaml
+  ocr/
+    config.yaml
+  layoutlm/
+    config.yaml
+weights/
+  layoutlm/
+    best_stage2.pt
+samples
+  letter.jpg
+  resume.jpg
+  resume_180.jpg
+processes/
+  accept_image/process.py
+  orient/
+    process.py
+    orientation.py
+  ocr/
+    process.py
+    ocr.py
+  layoutlm/
+    process.py
+    infer.py
+    model.py
 ```
 
 ## Setup
@@ -35,6 +50,7 @@ sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd
 ```
 
 Checkpoint: `weights/layoutlm/best_stage2.pt`
+It can be downloaded from HuggingFace: `Xrenya/layoutlmv3_stage2`
 
 ## Run
 
@@ -47,7 +63,7 @@ python run.py --image samples/resume_180.jpg -o samples/prediction_resume_180.js
 
 Four stages run in order (`config/pipeline.yaml`):
 
-**accept_image => orient => ocr => layoutlm**
+**accept_image => orient => ocr => layoutlm => prediction output**
 
 Everything hangs off a Podder payload: dictionaries. Each pipeline process has its own config, weights and pipline directory, so it easy to extend and maintain.
 
@@ -59,8 +75,8 @@ Takes whatever path you passed (`--image`)
 Output:  
 ```json
 {
-  "image_path": "samples/memo.jpg",
-  "width": 804,
+  "image_path": "samples/resume.jpg",
+  "width": 1000,
   "height": 1000
 }
 ```

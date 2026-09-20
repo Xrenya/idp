@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
-"""Post-training INT8 quantization + size / latency / accuracy report (CUDA).
-
-Default ``hf_split``: INT8 LayoutLMv3 encoder (bitsandbytes) + FP32 head.
-
-From the ``train/`` directory::
-
-    PYTHONPATH=. python scripts/quantize_and_benchmark.py --backend hf_split
-"""
+"""Quantize and benchmark a Stage 2 checkpoint."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
-# ``python scripts/...`` puts scripts/ on sys.path; add train/ for ``import src``.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
@@ -57,12 +50,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--backend",
-        choices=["hf_split", "bitsandbytes", "torch_dynamic"],
+        choices=["hf_split", "bitsandbytes"],
         default="hf_split",
         help=(
             "hf_split (default): INT8 encoder + FP32 head on CUDA; "
-            "bitsandbytes: INT8 all Linears; "
-            "torch_dynamic: CPU-only (unfair vs GPU FP32 latency)"
+            "bitsandbytes: INT8 all Linear layers"
         ),
     )
     p.add_argument("--batch-size", type=int, default=16, help="Benchmark batch size")
@@ -84,7 +76,7 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def resolve_checkpoint(checkpoint: str) -> Path:
-    """HF repo id → download ``best_stage2.pt``; otherwise treat as local path."""
+    """Resolve a local path or download the checkpoint from Hugging Face."""
     path = Path(checkpoint)
     if path.is_file():
         return path
@@ -163,61 +155,6 @@ def take_one_batch(loader: DataLoader) -> dict[str, torch.Tensor]:
     return batch
 
 
-def write_report_md(report: dict[str, Any], path: Path) -> None:
-    fp = report["fp32"]
-    q = report["int8"]
-    trade = report["tradeoff"]
-    lines = [
-        "# Quantization performance analysis",
-        "",
-        f"- Checkpoint: `{report['checkpoint']}`",
-        f"- INT8 backend: **{report['backend']}**",
-        f"- Device (FP32): `{fp['device']}` · INT8: `{q['device']}`",
-        f"- Benchmark batch size: **{report['batch_size']}**",
-        f"- Eval samples (macro-F1): **{report['max_eval_samples']}**",
-        "",
-        "## Model size",
-        "",
-        "| Variant | Params (approx) | Size (MB) | State-dict (MB) |",
-        "|---|---:|---:|---:|",
-        f"| FP32 | {fp.get('num_params', '—')} | {fp['size_mb']:.2f} | {fp['state_dict_mb']:.2f} |",
-        f"| INT8 | {q.get('num_params', '—')} | {q['size_mb']:.2f} | {q['state_dict_mb']:.2f} |",
-        "",
-        f"- Size reduction: **{trade['size_reduction_pct']:.1f}%** "
-        f"({fp['size_mb']:.1f} → {q['size_mb']:.1f} MB)",
-        "",
-        "## Inference latency",
-        "",
-        "| Variant | Avg latency (ms) | p50 (ms) | Throughput (docs/s) |",
-        "|---|---:|---:|---:|",
-        f"| FP32 | {fp['latency']['avg_ms']:.1f} | {fp['latency']['p50_ms']:.1f} | "
-        f"{fp['throughput_docs_per_s']:.2f} |",
-        f"| INT8 | {q['latency']['avg_ms']:.1f} | {q['latency']['p50_ms']:.1f} | "
-        f"{q['throughput_docs_per_s']:.2f} |",
-        "",
-        f"- Speedup: **{trade['speedup_x']:.2f}×** "
-        f"(latency {fp['latency']['avg_ms']:.1f} → {q['latency']['avg_ms']:.1f} ms)",
-        "",
-        "## Accuracy (primary metric: macro-F1)",
-        "",
-        "| Variant | macro-F1 | micro-F1 | Hamming loss |",
-        "|---|---:|---:|---:|",
-        f"| FP32 | {fp['metrics']['macro_f1']:.4f} | {fp['metrics']['micro_f1']:.4f} | "
-        f"{fp['metrics']['hamming_loss']:.4f} |",
-        f"| INT8 | {q['metrics']['macro_f1']:.4f} | {q['metrics']['micro_f1']:.4f} | "
-        f"{q['metrics']['hamming_loss']:.4f} |",
-        "",
-        f"- Absolute macro-F1 change (FP32 − INT8): **{trade['macro_f1_drop']:+.4f}** "
-        f"({trade['macro_f1_drop_pct']:+.2f}% relative to FP32)",
-        "",
-        "## Trade-off discussion",
-        "",
-        trade["discussion"],
-        "",
-    ]
-    path.write_text("\n".join(lines), encoding="utf-8")
-
-
 def main() -> int:
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required for quantization / benchmarking")
@@ -227,16 +164,15 @@ def main() -> int:
     device = torch.device("cuda")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[load] checkpoint={args.checkpoint} device={device}")
     ckpt_path = resolve_checkpoint(args.checkpoint)
-    print(f"[load] weights={ckpt_path}")
+    print(f"Checkpoint: {ckpt_path}")
     model_fp32, labels, missing, unexpected = load_stage2_model(
         cfg, ckpt_path, device
     )
     if missing:
-        print(f"[warn] missing keys: {missing[:6]}...")
+        warnings.warn(f"Missing checkpoint keys: {missing[:6]}", stacklevel=2)
     if unexpected:
-        print(f"[warn] unexpected keys: {unexpected[:6]}...")
+        warnings.warn(f"Unused checkpoint keys: {unexpected[:6]}", stacklevel=2)
 
     train_cfg = cfg.get("train", {})
     model_name = str(train_cfg.get("model_name", "microsoft/layoutlmv3-base"))
@@ -262,7 +198,7 @@ def main() -> int:
     bench_batch = take_one_batch(loader)
     threshold = float(cfg.get("output", {}).get("label_threshold", 0.5))
 
-    print("[fp32] size / latency / metrics...")
+    print("Benchmarking the FP32 model")
     fp_size = model_size_mb(model_fp32)
     fp_sd = state_dict_size_mb(model_fp32)
     fp_lat = benchmark_latency_ms(
@@ -277,11 +213,10 @@ def main() -> int:
         fp_labels, fp_probs, threshold=threshold, class_names=labels
     )
 
-    print(f"[int8] quantizing backend={args.backend}...")
+    print(f"Quantizing with {args.backend}")
     model_int8, backend_used = quantize_model(
         model_fp32, backend=args.backend, device=device
     )
-    print(f"[int8] using backend={backend_used}")
     q_size = model_size_mb(model_int8)
     q_sd = state_dict_size_mb(model_int8)
     q_lat = benchmark_latency_ms(
@@ -306,33 +241,15 @@ def main() -> int:
             },
             q_path,
         )
-        print(f"[save] {q_path}")
+        print(f"Saved checkpoint: {q_path}")
     except Exception as exc:
-        print(f"[warn] could not save quantized checkpoint: {exc}")
+        warnings.warn(f"Could not save the quantized checkpoint: {exc}", stacklevel=2)
         q_path = None
 
     size_red = 100.0 * (1.0 - q_size / max(fp_size, 1e-9))
     speedup = fp_lat["avg_ms"] / max(q_lat["avg_ms"], 1e-9)
     f1_drop = float(fp_metrics["macro_f1"] - q_metrics["macro_f1"])
     f1_drop_pct = 100.0 * f1_drop / max(abs(fp_metrics["macro_f1"]), 1e-9)
-
-    discussion = (
-        f"Backend={backend_used}: "
-        + (
-            "INT8 LayoutLMv3 encoder (bitsandbytes) + FP32 aggregator/classifier. "
-            if backend_used == "hf_split"
-            else "INT8 on eligible Linear layers. "
-        )
-        + f"Size {fp_size:.1f} → {q_size:.1f} MB ({size_red:.1f}% smaller). "
-        f"Latency {fp_lat['avg_ms']:.1f} ms ({fp_lat['device']}) → "
-        f"{q_lat['avg_ms']:.1f} ms ({q_lat['device']}) ({speedup:.2f}×). "
-        f"macro-F1 {fp_metrics['macro_f1']:.4f} → {q_metrics['macro_f1']:.4f} "
-        f"(Δ={-f1_drop:+.4f})."
-    )
-    if backend_used == "torch_dynamic" and fp_lat["device"] != q_lat["device"]:
-        discussion += (
-            " Warning: torch_dynamic is CPU-only; do not compare to CUDA FP32 latency."
-        )
 
     report = {
         "checkpoint": args.checkpoint,
@@ -354,9 +271,7 @@ def main() -> int:
         },
         "int8": {
             "device": q_lat["device"],
-            "num_params": count_parameters(model_int8)
-            if count_parameters(model_int8) > 0
-            else None,
+            "num_params": count_parameters(model_int8),
             "size_mb": q_size,
             "state_dict_mb": q_sd,
             "latency": q_lat,
@@ -371,16 +286,13 @@ def main() -> int:
             "macro_f1_drop": f1_drop,
             "macro_f1_drop_pct": f1_drop_pct,
             "primary_metric": "macro_f1",
-            "discussion": discussion,
         },
     }
 
     json_path = args.output_dir / "quantization_report.json"
-    md_path = args.output_dir / "quantization_report.md"
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    write_report_md(report, md_path)
     print(json.dumps(report["tradeoff"], indent=2))
-    print(f"[done] wrote {json_path} and {md_path}")
+    print(f"Report: {json_path}")
     return 0
 
 
