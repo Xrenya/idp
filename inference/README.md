@@ -140,4 +140,4 @@ Output:
 }
 ```
 
-Anything with score ≥ `label_threshold` (0.5) goes into `labels`. Empty list ⇒ `is_none: true` (none of letter/form/email/resume).
+Anything with score ≥ `label_threshold` (0.5) goes into `labels`. Empty list `is_none: true` (none of letter/form/email/resume).
