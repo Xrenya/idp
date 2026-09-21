@@ -115,7 +115,7 @@ Truncation is not good since the most relevant information might be located outs
 I have used the focal loss (BCE) in order to tackle class disbalance, since the original dataset contains 15 classes and the current one has only 4 targets, I have sampled around approximately the same number of from the rest of data, so we have a lot target and non-target samples, which are a lot less than target. 
 
 ## Data
-The data target class can viewed on Hugging Face since it was saved as well.
+The data target class can viewed on Hugging Face since it was saved as well. The augmentations were done with AlbumentationsX which is working with bounding boxes and image quite well.
 
 ## Architecture
 The inference pipeline for document (image) processing I have include into separate repo (inferece), which show how the production pipeline look like with image reading, image rotation, OCR and finally prediction. See details in **inference** folder.
