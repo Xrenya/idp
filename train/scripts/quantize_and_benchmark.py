@@ -293,8 +293,7 @@ def main() -> int:
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report["tradeoff"], indent=2))
     print(f"Report: {json_path}")
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

@@ -120,7 +120,6 @@
     "speedup_x": 1.0469634888131667,
     "macro_f1_drop": -0.004447115384615508,
     "macro_f1_drop_pct": -0.48964190172245226,
-    "primary_metric": "macro_f1",
-    "discussion": "Backend=hf_split: INT8 LayoutLMv3 encoder (bitsandbytes) + FP32 aggregator/classifier"
+    "primary_metric": "macro_f1"
   }
 }
