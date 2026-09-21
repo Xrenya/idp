@@ -48,7 +48,7 @@ Multiple GPUs (I had some issue with my 2 GPUs so not sure whether it would work
 python -m torch.distributed.run --nproc_per_node=2 --module src.train --config config.yaml --stage 1 --output-dir outputs/layoutlmv3
 ```
 
-Writes `outputs/layoutlmv3/best.pt` (and `best_stage1.pt`). This checkpoint would be used to the second stage since the model was trained on random splits in case the number of tokens exceeding 512 tokens. So I freezed the model for the second stage since it should be handle it properly and train only the features aggregator.
+Writes `outputs/layoutlmv3/best.pt` (and `best_stage1.pt`). This checkpoint would be used to the second stage since the model was trained on random splits in case the number of tokens exceeding 512 tokens. So I freezed the model for the second stage since it should be handle it properly and train only the features aggregator, but in this cased it generates features 400 tokens with overal 100 and each chunk gives cls token feature which goes into the aggregator to make the final prediction.
 
 ## Stage 2 - freeze encoder, train attention aggregator
 
@@ -58,7 +58,7 @@ Single GPU:
 python -m src.train --config config.yaml --stage 2 --encoder-checkpoint outputs/layoutlmv3/best.pt --output-dir outputs/layoutlmv3_stage2
 ```
 
-Multiple GPUs (I did not test it at all due to issue above so trained on sigle GPU):
+Multiple GPUs (I did not test it at all due to issue above so I trained on sigle GPU):
 
 ```bash
 python -m torch.distributed.run --nproc_per_node=2 --module src.train --config config.yaml --stage 2 --encoder-checkpoint outputs/layoutlmv3/best.pt --output-dir outputs/layoutlmv3_stage2
@@ -83,12 +83,12 @@ python scripts/quantize_and_benchmark.py --config config.yaml --checkpoint outpu
 
 Writes the INT8 checkpoint and `quantization_report.json` under `outputs/quantization/`.
 
-Overall model is not that fast (only 5%), the model should be larger to get speed up from quantization, while the checkpoint reduced in half which quite good. There is not significant changes in metrics so it should be tested on the larger subset.
+Overall model is not that fast (only 6%), the model should be larger to get speed up from quantization (I did not convert the aggregation layer into int8 since it is too small to give any noticeable boots to the model, but probably in production better convert into tensorrt rather then keeping the pure torch), while the checkpoint was reduced in half which is quite good. Metrics are slightly worse so it should be tested on the larger subset.
 
-```mardown
+```markdown
 Model: INT8 LayoutLMv3 encoder (bitsandbytes) + FP32 aggregator/classifier
 size_reduction_pct: 50.52098084292356
-speedup_x: 1.0469634888131667
-macro_f1_drop: -0.004447115384615508
-macro_f1_drop_pct: -0.48964190172245226
+speedup_x: 1.0623752956427268
+macro_f1_drop: 0.004627766599597627 (macro_f1_drop = FP32 macro-F1 − INT8 macro-F1)
+macro_f1_drop_pct: 0.8391004245049617 (macro_f1_drop_pct = (macro_f1_drop_pct / FP32 macro-F1) * 100)
 ```
