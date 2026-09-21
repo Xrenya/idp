@@ -1,5 +1,3 @@
-# Paths are relative to train/.
-
 data:
   target_labels:
     - letter
@@ -22,7 +20,7 @@ augmentation:
 
 train:
   model_name: microsoft/layoutlmv3-base
-  # Validation data is split from these shards.
+  # Validation data is split from these shards, I did not have time and storage to process it
   train_parquet: data
   val_ratio: 0.2
   output_dir: outputs/layoutlmv3
@@ -41,13 +39,15 @@ train:
     alpha: 0.25
 
 long_document:
+  # Stage 1: random sample (boxes or windows - well practically the same) (size=512) of each doc to max_tokens before encoding
+  # Stage 2: generate max chunks (size = 16 X 400 = 6400), I did not inspect the dataset to set this number( 
   max_tokens: 512
   chunk_size: 400
   chunk_stride: 100
   max_chunks: 16
   stage: 1
   freeze_encoder: false
-  mode_sampling: random_boxes  # random_boxes | random_window | head
+  mode_sampling: random_boxes
 
 output:
   label_threshold: 0.5
