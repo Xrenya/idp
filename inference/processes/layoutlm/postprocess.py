@@ -42,35 +42,72 @@ def stage2_token_budget(
     return max(1, cover - int(num_special_tokens))
 
 
-def truncate_words_for_stage2(
-    words: list[str],
-    boxes: list[list[float]],
+def sliding_word_windows(
+    tok_lens: Sequence[int],
+    *,
+    budget: int,
+    stride: int,
+) -> list[tuple[int, int]]:
+    """Contiguous word spans whose subword counts fit in ``budget`` each."""
+    n = len(tok_lens)
+    if n == 0:
+        return [(0, 0)]
+    budget = max(1, int(budget))
+    stride = max(1, int(stride))
+    if int(sum(tok_lens)) <= budget:
+        return [(0, n)]
+
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while start < n:
+        acc = 0
+        end = start
+        while end < n and acc + int(tok_lens[end]) <= budget:
+            acc += int(tok_lens[end])
+            end += 1
+        if end == start:
+            end = start + 1
+        spans.append((start, end))
+        if end >= n:
+            break
+        advanced = 0
+        new_start = start
+        while new_start < end and advanced < stride:
+            advanced += int(tok_lens[new_start])
+            new_start += 1
+        if new_start <= start:
+            new_start = start + 1
+        start = new_start
+    return spans
+
+
+def select_word_windows(
+    spans: list[tuple[int, int]],
+    *,
+    max_chunks: int,
+) -> list[tuple[int, int]]:
+    """Deterministic head windows (inference / validation)."""
+    max_chunks = max(1, int(max_chunks))
+    if len(spans) <= max_chunks:
+        return spans
+    return spans[:max_chunks]
+
+
+def word_chunk_spans(
+    words: Sequence[str],
     *,
     tokenizer,
     chunk_size: int,
     chunk_stride: int,
     max_chunks: int,
     num_special_tokens: int = 2,
-) -> tuple[list[str], list[list[float]]]:
-    n = len(words)
-    if n == 0:
-        return words, boxes
-
-    budget = stage2_token_budget(
-        chunk_size=chunk_size,
-        chunk_stride=chunk_stride,
-        max_chunks=max_chunks,
-        num_special_tokens=num_special_tokens,
-    )
+) -> list[tuple[int, int]]:
+    """Stage-2 word windows matching the training long-doc loader."""
+    if not words:
+        return [(0, 0)]
+    word_budget = max(1, int(chunk_size) - int(num_special_tokens))
     tok_lens = [max(1, len(tokenizer.tokenize(str(w)))) for w in words]
-    if int(sum(tok_lens)) <= budget:
-        return words, boxes
-
-    acc = 0
-    end = 0
-    while end < n and acc + tok_lens[end] <= budget:
-        acc += tok_lens[end]
-        end += 1
-    if end == 0:
-        end = 1
-    return words[:end], boxes[:end]
+    spans = sliding_word_windows(
+        tok_lens, budget=word_budget, stride=max(1, int(chunk_stride))
+    )
+    return select_word_windows(spans, max_chunks=max_chunks)
