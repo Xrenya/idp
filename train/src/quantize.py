@@ -108,11 +108,6 @@ def quantize_hf_split(
     *,
     threshold: float = 6.0,
 ) -> nn.Module:
-    if device.type != "cuda":
-        raise RuntimeError("hf_split quantization requires CUDA")
-    if not hasattr(model, "encoder"):
-        raise RuntimeError("hf_split expects a model with an encoder")
-
     model = copy.deepcopy(model)
     model.eval()
     model.cpu()

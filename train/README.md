@@ -48,7 +48,7 @@ Multiple GPUs (I had some issue with my 2 GPUs so not sure whether it would work
 python -m torch.distributed.run --nproc_per_node=2 --module src.train --config config.yaml --stage 1 --output-dir outputs/layoutlmv3
 ```
 
-Writes `outputs/layoutlmv3/best.pt` (and `best_stage1.pt`). This checkpoint would be used to the second stage since the model was trained on random splits in case the number of tokens exceeding 512 tokens. So I freezed the model for the second stage since it should be handle it properly and train only the features aggregator, but in this cased it generates features 400 tokens with overal 100 and each chunk gives cls token feature which goes into the aggregator to make the final prediction.
+Writes `outputs/layoutlmv3/best.pt` (and `best_stage1.pt`). This checkpoint would be used to the second stage since the model was trained on random splits in case the number of tokens exceeding 512 tokens. So I freezed the model for the second stage since it should be handle it properly and train only the features aggregator, but in this case it generates features 400 tokens with overal 100 and each chunk gives cls token feature which goes into the aggregator to make the final prediction.
 
 ## Stage 2 - freeze encoder, train attention aggregator
 
@@ -109,3 +109,13 @@ python -m src.evaluate --config config.yaml --stage 2 --checkpoint outputs/layou
 ## Models
 
 The aggregation attention looks like make sense for long document predictions, as I explained above, we process the with trained frozen backbone and the aggregate features from each overlap window to make final prediction based on the sum of the weighted feature output which is used to make the final prediction using the classification layer. Probabaly, any seq2seq model would work fine RNN, LSTM, Bidirectional models including transformer, since the current models are mostly attention based then the attention model should work here as well. So, it would increase features toward most relevant features while reducing affect of less relevant features, also it would be possible to debug and check which particular chuck of data makes the strongest contribution towards the final output (like it is done in SHAP).    
+Truncation is not good since the most relevant information might be located outside the context window, the generated features for long context would beneficial since it would be possible to get the most relevant information from any position within the text. Pooling would allow to get the most relevant based on the features values, same goes to averaging - adding a lot of relevant features would get even more feature value. The long context allows to get the capture the most relevant features from it (e.g. the current best examples are RAGs when you encode whole documents into chunks of embeddings and then it is quite easy to retrieve it again).
+
+## Loss
+I have used the focal loss (BCE) in order to tackle class disbalance, since the original dataset contains 15 classes and the current one has only 4 targets, I have sampled around approximately the same number of from the rest of data, so we have a lot target and non-target samples, which are a lot less than target. 
+
+## Data
+The data target class can viewed on Hugging Face since it was saved as well.
+
+## Architecture
+The inference pipeline for document (image) processing I have include into separate repo (inferece), which show how the production pipeline look like with image reading, image rotation, OCR and finally prediction. See details in **inference** folder.
