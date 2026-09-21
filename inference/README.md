@@ -89,14 +89,26 @@ Apply rotation in case the docs might be not correctly rotated (I have tried to 
 Output:
 ```json
 {
-  "rotate_degrees": 0,
-  "detected_orientation": 0,
-  "confidence": 1.22,
-  "backend": "osd_skipped_low_conf",
-  "script": "Latin",
-  "raw": { "...": "whatever OSD returned" },
+  "rotate_degrees": 180,
+  "detected_orientation": 180,
+  "confidence": 634.0,
+  "backend": "ocr_score",
+  "script": "",
+  "raw": {
+    "scores": {
+      "0": 607.0,
+      "90": 486.0,
+      "180": 634.0,
+      "270": 531.0
+    },
+    "ocr_validate": {
+      "base_score": 607.0,
+      "rotated_score": 634.0,
+      "proposed_rotate": 180
+    }
+  },
   "min_osd_confidence": 1.5,
-  "applied_rotation": 0
+  "applied_rotation": 180
 }
 ```
 
@@ -107,12 +119,12 @@ Tesseract provide output of words and boxes:
 Output:
 ```json
 {
-  "n_words": 130,
+  "n_words": 138,
   "width": 804,
   "height": 1000,
   "box_space": "pixel",
   "engine": "pytesseract",
-  "words": ["John", "Doe"],
+  "words": ["ATB", "RSM"],
   "boxes": [[12.0, 40.0, 80.0, 62.0], [90.0, 40.0, 140.0, 62.0]]
 }
 ```
@@ -127,16 +139,16 @@ Output:
 {
   "labels": ["resume"],
   "scores": {
-    "letter": 0.0589,
-    "form": 0.0838,
-    "email": 0.0297,
-    "resume": 0.5596
+    "letter": 0.014319573529064655,
+    "form": 0.0073502082377672195,
+    "email": 0.00820494256913662,
+    "resume": 0.8875422477722168
   },
   "is_none": false,
   "checkpoint": "weights/layoutlm/best_stage2.pt",
   "stage": 2,
   "device": "cuda",
-  "n_ocr_words": 130
+  "n_ocr_words": 138
 }
 ```
 
