@@ -92,3 +92,20 @@ speedup_x: 1.0623752956427268
 macro_f1_drop: 0.004627766599597627 (macro_f1_drop = FP32 macro-F1 − INT8 macro-F1)
 macro_f1_drop_pct: 0.8391004245049617 (macro_f1_drop_pct = (macro_f1_drop_pct / FP32 macro-F1) * 100)
 ```
+
+
+## Evaluate model
+
+Evaluate the first stage model
+```bash
+python -m src.evaluate --config config.yaml --stage 1 --checkpoint outputs/layoutlmv3/best.pt
+```
+
+Evaluate the second stage model
+```bash
+python -m src.evaluate --config config.yaml --stage 2 --checkpoint outputs/layoutlmv3_stage2/best_stage2.pt
+```
+
+## Models
+
+The aggregation attention looks like make sense for long document predictions, as I explained above, we process the with trained frozen backbone and the aggregate features from each overlap window to make final prediction based on the sum of the weighted feature output which is used to make the final prediction using the classification layer. Probabaly, any seq2seq model would work fine RNN, LSTM, Bidirectional models including transformer, since the current models are mostly attention based then the attention model should work here as well. So, it would increase features toward most relevant features while reducing affect of less relevant features, also it would be possible to debug and check which particular chuck of data makes the strongest contribution towards the final output (like it is done in SHAP).    
