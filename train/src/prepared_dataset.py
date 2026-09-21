@@ -20,6 +20,78 @@ TARGET_LABELS = ["letter", "form", "email", "resume"]
 Mode = Literal["head", "random_window", "random_boxes"]
 
 
+def stage2_token_budget(
+    *,
+    chunk_size: int,
+    chunk_stride: int,
+    max_chunks: int,
+    num_special_tokens: int = 2,
+) -> int:
+    """Max subword tokens a Stage-2 sample can cover across sliding chunks."""
+    chunk_size = int(chunk_size)
+    chunk_stride = int(chunk_stride)
+    max_chunks = max(1, int(max_chunks))
+    if max_chunks == 1:
+        cover = chunk_size
+    else:
+        cover = chunk_size + (max_chunks - 1) * chunk_stride
+    return max(1, cover - int(num_special_tokens))
+
+
+def sliding_word_windows(
+    tok_lens: Sequence[int],
+    *,
+    budget: int,
+    stride: int,
+) -> list[tuple[int, int]]:
+    """Contiguous word spans whose subword counts fit in ``budget`` each."""
+    n = len(tok_lens)
+    if n == 0:
+        return [(0, 0)]
+    budget = max(1, int(budget))
+    stride = max(1, int(stride))
+    if int(sum(tok_lens)) <= budget:
+        return [(0, n)]
+
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while start < n:
+        acc = 0
+        end = start
+        while end < n and acc + int(tok_lens[end]) <= budget:
+            acc += int(tok_lens[end])
+            end += 1
+        if end == start:
+            end = start + 1
+        spans.append((start, end))
+        if end >= n:
+            break
+        advanced = 0
+        new_start = start
+        while new_start < end and advanced < stride:
+            advanced += int(tok_lens[new_start])
+            new_start += 1
+        if new_start <= start:
+            new_start = start + 1
+        start = new_start
+    return spans
+
+
+def select_word_windows(
+    spans: list[tuple[int, int]],
+    *,
+    max_chunks: int,
+    training: bool,
+) -> list[tuple[int, int]]:
+    max_chunks = max(1, int(max_chunks))
+    if len(spans) <= max_chunks:
+        return spans
+    if training:
+        offset = random.randint(0, len(spans) - max_chunks)
+        return spans[offset : offset + max_chunks]
+    return spans[:max_chunks]
+
+
 def sample_words_boxes_for_context(
     words: list[str],
     boxes: list[list[float]],
@@ -108,6 +180,10 @@ class PreparedParquetDataset(Dataset):
         training: bool = True,
         max_samples: int | None = None,
         indices: Sequence[int] | None = None,
+        stage: int = 1,
+        chunk_size: int = 400,
+        chunk_stride: int = 100,
+        max_chunks: int = 16,
     ) -> None:
         path = Path(parquet_dir)
         self.files = sorted(p for p in path.glob("*.parquet") if p.stat().st_size > 0)
@@ -131,6 +207,10 @@ class PreparedParquetDataset(Dataset):
         self.max_length = int(max_length)
         self.mode_sampling: Mode = mode_sampling
         self.training = bool(training)
+        self.stage = int(stage)
+        self.chunk_size = int(chunk_size)
+        self.chunk_stride = int(chunk_stride)
+        self.max_chunks = max(1, int(max_chunks))
 
         self._cache_shard: int | None = None
         self._cache_table = None
@@ -160,8 +240,9 @@ class PreparedParquetDataset(Dataset):
             vec[self.target_labels.index(name)] = 1.0
         return torch.tensor(vec, dtype=torch.float32)
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        row = self._get_row(self.indices[idx])
+    def _prepare_words_boxes(
+        self, row: dict[str, Any]
+    ) -> tuple[Image.Image, list[str], list[list[float]]]:
         image = decode_image(row["image"])
         width, height = image.size
 
@@ -191,33 +272,123 @@ class PreparedParquetDataset(Dataset):
         if not kept_words:
             kept_words = ["[UNK]"]
             clipped = [[0.0, 0.0, float(max(width - 1, 1)), float(max(height - 1, 1))]]
+        return image, kept_words, clipped
 
-        kept_words, clipped = sample_words_boxes_for_context(
-            kept_words,
-            clipped,
+    def _encode_stage1(
+        self, image: Image.Image, words: list[str], boxes: list[list[float]]
+    ) -> dict[str, torch.Tensor]:
+        width, height = image.size
+        words, boxes = sample_words_boxes_for_context(
+            words,
+            boxes,
             tokenizer=self.tokenizer,
             max_length=self.max_length,
             mode=self.mode_sampling,
             training=self.training,
         )
-        norm_boxes = normalize_boxes(clipped, width, height)
-
+        norm_boxes = normalize_boxes(boxes, width, height)
         encoding = self.processor(
             image,
-            kept_words,
+            words,
             boxes=norm_boxes,
             return_tensors="pt",
             truncation=True,
             padding="max_length",
             max_length=self.max_length,
         )
-        item = {k: v.squeeze(0) for k, v in encoding.items()}
+        return {k: v.squeeze(0) for k, v in encoding.items()}
+
+    def _encode_stage2(
+        self, image: Image.Image, words: list[str], boxes: list[list[float]]
+    ) -> dict[str, torch.Tensor]:
+        width, height = image.size
+        word_budget = max(1, self.chunk_size - 2)
+        stride_budget = max(1, self.chunk_stride)
+        tok_lens = [max(1, len(self.tokenizer.tokenize(str(w)))) for w in words]
+        spans = sliding_word_windows(
+            tok_lens, budget=word_budget, stride=stride_budget
+        )
+        spans = select_word_windows(
+            spans, max_chunks=self.max_chunks, training=self.training
+        )
+        if not spans:
+            spans = [(0, max(1, len(words)))]
+
+        chunk_ids: list[torch.Tensor] = []
+        chunk_mask_tok: list[torch.Tensor] = []
+        chunk_bbox: list[torch.Tensor] = []
+        pixel_values: torch.Tensor | None = None
+        valid: list[float] = []
+
+        for start, end in spans:
+            w = words[start:end] or ["[UNK]"]
+            b = boxes[start:end] or [
+                [0.0, 0.0, float(max(width - 1, 1)), float(max(height - 1, 1))]
+            ]
+            norm_boxes = normalize_boxes(b, width, height)
+            encoding = self.processor(
+                image,
+                w,
+                boxes=norm_boxes,
+                return_tensors="pt",
+                truncation=True,
+                padding="max_length",
+                max_length=self.chunk_size,
+            )
+            enc = {k: v.squeeze(0) for k, v in encoding.items()}
+            chunk_ids.append(enc["input_ids"])
+            chunk_mask_tok.append(enc["attention_mask"])
+            chunk_bbox.append(enc["bbox"])
+            if pixel_values is None:
+                pixel_values = enc["pixel_values"]
+            valid.append(1.0)
+
+        assert pixel_values is not None
+        return {
+            "input_ids": torch.stack(chunk_ids, dim=0),
+            "attention_mask": torch.stack(chunk_mask_tok, dim=0),
+            "bbox": torch.stack(chunk_bbox, dim=0),
+            "pixel_values": pixel_values,
+            "chunk_mask": torch.tensor(valid, dtype=torch.float32),
+        }
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        row = self._get_row(self.indices[idx])
+        image, words, boxes = self._prepare_words_boxes(row)
+        if self.stage == 2:
+            item = self._encode_stage2(image, words, boxes)
+        else:
+            item = self._encode_stage1(image, words, boxes)
         item["labels"] = self._labels_tensor(row)
         item["index"] = int(row.get("index", self.indices[idx]))
         return item
 
 
+def _pad_chunk_dim(tensor: torch.Tensor, max_c: int, pad_value: int | float = 0) -> torch.Tensor:
+    c = int(tensor.shape[0])
+    if c == max_c:
+        return tensor
+    if c > max_c:
+        return tensor[:max_c]
+    pad_shape = (max_c - c, *tensor.shape[1:])
+    pad = tensor.new_full(pad_shape, pad_value)
+    return torch.cat([tensor, pad], dim=0)
+
+
 def prepared_collate(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+    first = batch[0]["input_ids"]
+    if first.dim() == 2:
+        max_c = max(int(b["input_ids"].shape[0]) for b in batch)
+        out: dict[str, torch.Tensor] = {}
+        for key in ("input_ids", "attention_mask", "bbox", "chunk_mask"):
+            out[key] = torch.stack(
+                [_pad_chunk_dim(b[key], max_c, pad_value=0) for b in batch], dim=0
+            )
+        out["pixel_values"] = torch.stack([b["pixel_values"] for b in batch], dim=0)
+        out["labels"] = torch.stack([b["labels"] for b in batch], dim=0)
+        out["index"] = torch.tensor([b["index"] for b in batch], dtype=torch.long)
+        return out
+
     keys = [k for k in batch[0].keys() if k != "index"]
     out = {k: torch.stack([b[k] for b in batch], dim=0) for k in keys}
     out["index"] = torch.tensor([b["index"] for b in batch], dtype=torch.long)
@@ -237,7 +408,11 @@ def create_prepared_dataloaders(
     train_cfg = config.get("train", {})
     long_cfg = config.get("long_document", {})
 
+    stage = int(train_cfg.get("stage", long_cfg.get("stage", 1)))
     max_length = int(long_cfg.get("max_tokens", 512))
+    chunk_size = int(long_cfg.get("chunk_size", 400))
+    chunk_stride = int(long_cfg.get("chunk_stride", 100))
+    max_chunks = int(long_cfg.get("max_chunks", 16))
     mode_sampling = long_cfg.get("mode_sampling", "random_window")
     target_labels = data_cfg.get("target_labels", TARGET_LABELS)
     seed = int(data_cfg.get("seed", 42))
@@ -247,6 +422,10 @@ def create_prepared_dataloaders(
         processor=processor,
         target_labels=target_labels,
         max_length=max_length,
+        stage=stage,
+        chunk_size=chunk_size,
+        chunk_stride=chunk_stride,
+        max_chunks=max_chunks,
     )
 
     probe = PreparedParquetDataset(
@@ -281,10 +460,26 @@ def create_prepared_dataloaders(
         **common,
     )
     if rank == 0:
-        print(
-            f"Dataset split ({train_parquet}): "
-            f"{len(train_ds)} train, {len(val_ds)} validation, seed {seed}"
-        )
+        if stage == 2:
+            cover = stage2_token_budget(
+                chunk_size=chunk_size,
+                chunk_stride=chunk_stride,
+                max_chunks=max_chunks,
+            )
+            print(
+                f"Dataset split ({train_parquet}): "
+                f"{len(train_ds)} train, {len(val_ds)} validation, seed {seed}"
+            )
+            print(
+                f"Stage 2 long-doc loader: chunk_size={chunk_size}, "
+                f"stride={chunk_stride}, max_chunks={max_chunks}, "
+                f"~{cover} token cover"
+            )
+        else:
+            print(
+                f"Dataset split ({train_parquet}): "
+                f"{len(train_ds)} train, {len(val_ds)} validation, seed {seed}"
+            )
 
     batch_size = int(data_cfg.get("batch_size", 4))
     num_workers = int(data_cfg.get("num_workers", 4))
