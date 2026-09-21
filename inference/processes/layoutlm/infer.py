@@ -9,7 +9,7 @@ from transformers import LayoutLMv3Processor
 
 from .boxes import normalize_boxes
 from .model import LayoutLMv3MultiLabel
-from .postprocess import prediction_to_json, truncate_words_for_stage2
+from .postprocess import prediction_to_json, word_chunk_spans
 
 MODEL_CACHE: dict[str, Any] | None = None
 
@@ -35,7 +35,6 @@ def load_layoutlm_bundle(
         chunk_size=int(long_cfg.get("chunk_size", 400)),
         chunk_stride=int(long_cfg.get("chunk_stride", 100)),
         max_chunks=int(long_cfg.get("max_chunks", 16)),
-        aggregator=str(long_cfg.get("aggregator", "attention")),
         stage=stage,
         freeze_encoder=True,
     )
@@ -60,6 +59,68 @@ def load_layoutlm_bundle(
         "device": device,
     }
     return MODEL_CACHE
+
+
+def _encode_stage2_chunks(
+    *,
+    image: Image.Image,
+    words: list[str],
+    boxes: list[list[float]],
+    processor,
+    chunk_size: int,
+    chunk_stride: int,
+    max_chunks: int,
+) -> dict[str, torch.Tensor]:
+    """Encode word windows independently so each chunk has CLS at index 0."""
+    width, height = image.size
+    tokenizer = getattr(processor, "tokenizer", processor)
+    spans = word_chunk_spans(
+        words,
+        tokenizer=tokenizer,
+        chunk_size=chunk_size,
+        chunk_stride=chunk_stride,
+        max_chunks=max_chunks,
+    )
+    if not spans:
+        spans = [(0, max(1, len(words)))]
+
+    chunk_ids: list[torch.Tensor] = []
+    chunk_mask_tok: list[torch.Tensor] = []
+    chunk_bbox: list[torch.Tensor] = []
+    pixel_values: torch.Tensor | None = None
+    valid: list[float] = []
+
+    for start, end in spans:
+        w = words[start:end] or ["[UNK]"]
+        b = boxes[start:end] or [
+            [0.0, 0.0, float(max(width - 1, 1)), float(max(height - 1, 1))]
+        ]
+        norm_boxes = normalize_boxes(b, width, height)
+        encoding = processor(
+            image,
+            w,
+            boxes=norm_boxes,
+            return_tensors="pt",
+            truncation=True,
+            padding="max_length",
+            max_length=chunk_size,
+        )
+        enc = {k: v.squeeze(0) for k, v in encoding.items()}
+        chunk_ids.append(enc["input_ids"])
+        chunk_mask_tok.append(enc["attention_mask"])
+        chunk_bbox.append(enc["bbox"])
+        if pixel_values is None:
+            pixel_values = enc["pixel_values"]
+        valid.append(1.0)
+
+    assert pixel_values is not None
+    return {
+        "input_ids": torch.stack(chunk_ids, dim=0).unsqueeze(0),
+        "attention_mask": torch.stack(chunk_mask_tok, dim=0).unsqueeze(0),
+        "bbox": torch.stack(chunk_bbox, dim=0).unsqueeze(0),
+        "pixel_values": pixel_values.unsqueeze(0),
+        "chunk_mask": torch.tensor([valid], dtype=torch.float32),
+    }
 
 
 def predict_document(
@@ -94,27 +155,38 @@ def predict_document(
     model = bundle["model"]
     processor = bundle["processor"]
     device = bundle["device"]
-    tokenizer = getattr(processor, "tokenizer", processor)
+    stage = int(bundle["stage"])
 
-    words, boxes = truncate_words_for_stage2(
-        words,
-        boxes,
-        tokenizer=tokenizer,
-        chunk_size=chunk_size,
-        chunk_stride=chunk_stride,
-        max_chunks=max_chunks,
-    )
-    norm_boxes = normalize_boxes(boxes, width, height)
+    if stage == 2:
+        batch = _encode_stage2_chunks(
+            image=image,
+            words=words,
+            boxes=boxes,
+            processor=processor,
+            chunk_size=chunk_size,
+            chunk_stride=chunk_stride,
+            max_chunks=max_chunks,
+        )
+        n_tokens = int(batch["attention_mask"].sum().item())
+        n_chunks = int(batch["chunk_mask"].sum().item())
+    else:
+        # Stage 1: single 512-token window (head).
+        max_tokens = int(long_cfg.get("max_tokens", 512))
+        norm_boxes = normalize_boxes(boxes, width, height)
+        encoding = processor(
+            image,
+            words,
+            boxes=norm_boxes,
+            return_tensors="pt",
+            truncation=True,
+            padding="max_length",
+            max_length=max_tokens,
+        )
+        batch = {k: v for k, v in encoding.items()}
+        n_tokens = int(batch["attention_mask"].sum().item())
+        n_chunks = 1
 
-    encoding = processor(
-        image,
-        words,
-        boxes=norm_boxes,
-        return_tensors="pt",
-        truncation=False,
-        padding=False,
-    )
-    batch = {k: v.to(device) for k, v in encoding.items()}
+    batch = {k: v.to(device) for k, v in batch.items()}
 
     with torch.inference_mode():
         out = model(**batch)
@@ -124,12 +196,13 @@ def predict_document(
         probs, target_names=target_labels, threshold=threshold
     )
     prediction["checkpoint"] = bundle["checkpoint"]
-    prediction["stage"] = bundle["stage"]
+    prediction["stage"] = stage
     prediction["device"] = str(device)
     prediction["n_ocr_words"] = int(
         n_ocr_words if n_ocr_words is not None else len(words)
     )
-    prediction["n_tokens"] = int(batch["input_ids"].shape[-1])
+    prediction["n_tokens"] = n_tokens
+    prediction["n_chunks"] = n_chunks
     prediction["chunk_size"] = chunk_size
     prediction["chunk_stride"] = chunk_stride
     prediction["max_chunks"] = max_chunks
