@@ -9,12 +9,16 @@ from podder_task_foundation.objects import Object
 
 def get_pil_image(payload: Payload, name: str = "image") -> Image.Image:
     obj = payload.get(name=name)
-    p = Path(obj.data)
-    return Image.open(p).convert("RGB")
+    if obj is None:
+        raise ValueError(f"payload missing '{name}'")
+    data = obj.data
+    if isinstance(data, Image.Image):
+        return data.convert("RGB")
+    return Image.open(Path(data)).convert("RGB")
 
 
 def put_pil_image(payload: Payload, image: Image.Image, name: str = "image") -> None:
-    payload.add(Object(data=image.convert("RGB"), name=name), name=name)
+    payload.add(Object(data=image, name=name), name=name)
 
 
 def forward(input_payload: Payload, output_payload: Payload, *names: str) -> None:
